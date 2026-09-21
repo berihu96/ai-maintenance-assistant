@@ -6,9 +6,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import HumanMessage, AIMessage
 
 # 1. Page Configuration
 st.set_page_config(
@@ -31,13 +32,12 @@ if not api_key:
 st.sidebar.header("📄 Upload Documentation")
 uploaded_file = st.sidebar.file_uploader("Upload a manual (PDF or TXT)", type=["pdf", "txt"])
 
-# 4. Helper Function to Build Vector Store from Uploaded File or Default File
+# 4. Helper Function to Build Vector Store
 @st.cache_resource(show_spinner="Processing and indexing manual...")
 def process_file(file_bytes, file_name):
     documents = []
     file_ext = os.path.splitext(file_name)[1].lower()
 
-    # Save uploaded file temporarily to process with LangChain loaders
     with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
         tmp_file.write(file_bytes)
         tmp_path = tmp_file.name
@@ -67,18 +67,16 @@ def process_file(file_bytes, file_name):
 vectorstore = None
 
 if uploaded_file is not None:
-    # Process user uploaded file
     vectorstore = process_file(uploaded_file.getvalue(), uploaded_file.name)
     st.sidebar.success(f"Indexed `{uploaded_file.name}` successfully!")
 elif os.path.exists("manual.txt"):
-    # Fallback to local manual.txt if present
     with open("manual.txt", "rb") as f:
         vectorstore = process_file(f.read(), "manual.txt")
     st.sidebar.info("Using default `manual.txt`.")
 else:
     st.sidebar.warning("Please upload a PDF or TXT manual to begin.")
 
-# 6. RAG Chain Initialization
+# 6. RAG Chain Initialization with Chat History
 rag_chain = None
 if vectorstore:
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
@@ -89,31 +87,31 @@ if vectorstore:
         temperature=0.1
     )
 
-    prompt_template = """
-    You are a technical maintenance assistant. Answer the user's question based strictly on the provided context.
-    If you do not know the answer based on the context, state that the information is not available in the manual.
+    # Prompt updated to include message history placeholder
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are a technical maintenance assistant. Answer the user's question based strictly on the provided context and conversation history.
+If you do not know the answer based on the context, state that the information is not available in the manual.
 
-    Format your response using:
-    - Markdown headers (###) for main sections or symptoms
-    - Bullet points (-) for action steps, causes, or requirements
-    - Bold text (**text**) for part numbers, warnings, or key terms
+Format your response using:
+- Markdown headers (###) for main sections or symptoms
+- Bullet points (-) for action steps, causes, or requirements
+- Bold text (**text**) for part numbers, warnings, or key terms
 
-    Context:
-    {context}
-
-    Question:
-    {question}
-
-    Answer:
-    """
-
-    prompt = ChatPromptTemplate.from_template(prompt_template)
+Context:
+{context}"""),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{question}")
+    ])
 
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
 
     rag_chain = (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        {
+            "context": (lambda x: x["question"]) | retriever | format_docs,
+            "chat_history": lambda x: x["chat_history"],
+            "question": lambda x: x["question"],
+        }
         | prompt
         | llm
         | StrOutputParser()
@@ -123,11 +121,13 @@ if vectorstore:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Display prior chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 if user_input := st.chat_input("Ask a maintenance or troubleshooting question..."):
+    # Display user input
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -140,6 +140,19 @@ if user_input := st.chat_input("Ask a maintenance or troubleshooting question...
     else:
         with st.chat_message("assistant"):
             with st.spinner("Searching document and generating response..."):
-                response = rag_chain.invoke(user_input)
+                # Convert session history to LangChain message objects
+                chat_history = []
+                for msg in st.session_state.messages[:-1]:  # exclude the latest question
+                    if msg["role"] == "user":
+                        chat_history.append(HumanMessage(content=msg["content"]))
+                    elif msg["role"] == "assistant":
+                        chat_history.append(AIMessage(content=msg["content"]))
+
+                # Execute chain with question and conversation context
+                response = rag_chain.invoke({
+                    "question": user_input,
+                    "chat_history": chat_history
+                })
+
                 st.markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
