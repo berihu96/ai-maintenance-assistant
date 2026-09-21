@@ -3,6 +3,7 @@ import tempfile
 import io
 import base64
 import html
+import csv
 import datetime
 from PIL import Image
 import numpy as np
@@ -53,7 +54,7 @@ st.set_page_config(
 )
 
 st.title("🔧 AI Maintenance Assistant")
-st.caption("Multimodal Field Tool: QR Equipment Lock, Hybrid RAG, Citation Tracking, Maintenance Scheduler, Multi-Language Voice, Vision Analysis, and PDF Work Logs.")
+st.caption("Multimodal Field Tool: QR Equipment Lock, Hybrid RAG, Citation Tracking, Maintenance Scheduler, Multi-Language Voice, Vision Analysis, PDF Work Logs, and Technician Feedback.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -63,7 +64,21 @@ if not api_key:
     st.stop()
 
 
-# 3. Helper Function: PDF Report Generator
+# 3. Helper Function: CSV Feedback Logger
+FEEDBACK_FILE = "feedback_log.csv"
+
+def log_feedback_to_csv(timestamp, user_prompt, assistant_response, rating, equipment_tag, citations):
+    file_exists = os.path.exists(FEEDBACK_FILE)
+    citation_text = " | ".join([c.page_content[:100].replace("\n", " ") for c in citations]) if citations else "None"
+    
+    with open(FEEDBACK_FILE, mode="a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["Timestamp", "Equipment Tag", "User Prompt", "Assistant Response", "Rating", "Citations Sample"])
+        writer.writerow([timestamp, equipment_tag or "N/A", user_prompt, assistant_response, rating, citation_text])
+
+
+# 4. Helper Function: PDF Report Generator
 def generate_pdf_report(messages, active_tag=None):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -131,7 +146,7 @@ def generate_pdf_report(messages, active_tag=None):
     return buffer
 
 
-# 4. Helper Function: QR/Barcode Detection using OpenCV
+# 5. Helper Function: QR/Barcode Detection using OpenCV
 def scan_qr_code(image_bytes):
     try:
         file_bytes = np.asarray(bytearray(image_bytes), dtype=np.uint8)
@@ -146,7 +161,7 @@ def scan_qr_code(image_bytes):
     return None
 
 
-# 5. Sidebar Controls
+# 6. Sidebar Controls
 st.sidebar.header("🌐 Language Settings")
 LANGUAGE_MAP = {
     "English 🇺🇸": {"code": "en", "name": "English"},
@@ -165,7 +180,6 @@ st.sidebar.header("🏷️ Equipment QR Scanner")
 if "active_qr_tag" not in st.session_state:
     st.session_state.active_qr_tag = None
 
-# Toggle switch to keep the camera completely off unless needed
 enable_camera = st.sidebar.checkbox("📷 Enable QR Camera Scanner", value=False)
 
 camera_photo = None
@@ -195,7 +209,6 @@ st.sidebar.header("⚙️ Equipment Scheduler")
 op_hours = st.sidebar.number_input("Current Operating Hours", min_value=0, value=450, step=10)
 last_service = st.sidebar.date_input("Last Service Date", value=datetime.date.today() - datetime.timedelta(days=90))
 
-# Pre-defined interval thresholds
 INTERVALS = {
     "Oil & Filter Change": 500,
     "Air Filter Inspection/Replacement": 1000,
@@ -224,7 +237,7 @@ st.sidebar.divider()
 st.sidebar.header("📋 Export Maintenance Summary")
 
 
-# 6. Helper Function: Multimodal Vision Analysis
+# 7. Helper Function: Multimodal Vision Analysis
 def analyze_image_with_groq(image_bytes, user_prompt, lang_name, key, active_tag=None):
     client = Groq(api_key=key)
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -256,7 +269,7 @@ def analyze_image_with_groq(image_bytes, user_prompt, lang_name, key, active_tag
     return chat_completion.choices[0].message.content
 
 
-# 7. Helper Function: Speech-to-Text
+# 8. Helper Function: Speech-to-Text
 def transcribe_audio(audio_bytes, lang_code, key):
     client = Groq(api_key=key)
     audio_file = ("audio.wav", audio_bytes, "audio/wav")
@@ -269,7 +282,7 @@ def transcribe_audio(audio_bytes, lang_code, key):
     return transcription
 
 
-# 8. Helper Function: Text-to-Speech
+# 9. Helper Function: Text-to-Speech
 def generate_speech(text, lang_code):
     clean_text = text.replace("#", "").replace("*", "").replace("-", "")
     tts = gTTS(text=clean_text, lang=lang_code)
@@ -279,7 +292,7 @@ def generate_speech(text, lang_code):
     return audio_fp
 
 
-# 9. Persistent Indexing & Hybrid Search Creation
+# 10. Persistent Indexing & Hybrid Search Creation
 INDEX_DIR = "faiss_index"
 
 @st.cache_resource(show_spinner="Processing documentation for Persistent Hybrid Search...")
@@ -333,7 +346,7 @@ def setup_hybrid_retriever(file_bytes=None, file_name=None):
     return faiss_retriever, "faiss_only"
 
 
-# 10. Hybrid Retriever Setup Initialization
+# 11. Hybrid Retriever Setup Initialization
 ensemble_retriever, search_mode = (
     setup_hybrid_retriever(uploaded_file.getvalue(), uploaded_file.name)
     if uploaded_file is not None
@@ -345,7 +358,7 @@ if ensemble_retriever:
 else:
     st.sidebar.warning("Upload a manual or rely on visual analysis.")
 
-# 11. RAG Model Setup
+# 12. RAG Model Setup
 llm = ChatGroq(
     groq_api_key=api_key,
     model_name="openai/gpt-oss-120b",
@@ -369,7 +382,7 @@ Context:
     ("human", "{question}")
 ]) if ensemble_retriever else None
 
-# 12. Maintenance Scheduler Display Component
+# 13. Maintenance Scheduler Display Component
 st.subheader("⏱️ Preventive Maintenance Status")
 
 if st.session_state.active_qr_tag:
@@ -407,7 +420,7 @@ else:
 
 st.divider()
 
-# 13. Session State & Chat UI Render
+# 14. Session State & Chat UI Render
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -428,10 +441,11 @@ if st.session_state.messages:
 else:
     st.sidebar.caption("Complete a chat interaction to unlock the PDF report generator.")
 
-# Render previous chat history
-for message in st.session_state.messages:
+# Render previous chat history with Feedback Loop controls
+for msg_idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        
         if "sources" in message and message["sources"]:
             with st.expander("📚 View Reference Sources & Citations"):
                 for idx, doc in enumerate(message["sources"], 1):
@@ -439,10 +453,48 @@ for message in st.session_state.messages:
                     page_str = f" (Page {page + 1})" if page is not None else ""
                     st.markdown(f"**Source {idx}{page_str}:**")
                     st.caption(doc.page_content)
+        
         if "audio" in message:
             st.audio(message["audio"], format="audio/mp3")
 
-# 14. Input Processing
+        # Feedback Loop: Rating buttons for assistant responses
+        if message["role"] == "assistant":
+            rating_key = f"rating_{msg_idx}"
+            user_prev_prompt = st.session_state.messages[msg_idx - 1]["content"] if msg_idx > 0 else "N/A"
+            
+            if rating_key not in st.session_state:
+                st.session_state[rating_key] = None
+
+            f_col1, f_col2, f_col3 = st.columns([1, 1, 10])
+            with f_col1:
+                if st.button("👍", key=f"up_{msg_idx}"):
+                    st.session_state[rating_key] = "thumbs_up"
+                    log_feedback_to_csv(
+                        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        user_prev_prompt,
+                        message["content"],
+                        "thumbs_up",
+                        st.session_state.active_qr_tag,
+                        message.get("sources", [])
+                    )
+            with f_col2:
+                if st.button("👎", key=f"down_{msg_idx}"):
+                    st.session_state[rating_key] = "thumbs_down"
+                    log_feedback_to_csv(
+                        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        user_prev_prompt,
+                        message["content"],
+                        "thumbs_down",
+                        st.session_state.active_qr_tag,
+                        message.get("sources", [])
+                    )
+
+            if st.session_state[rating_key] == "thumbs_up":
+                st.caption("👍 *Feedback recorded: Helpful!*")
+            elif st.session_state[rating_key] == "thumbs_down":
+                st.caption("👎 *Feedback recorded: Needs improvement.*")
+
+# 15. Input Processing
 user_input = st.chat_input(f"Ask a question ({selected_lang_name}) or upload a photo to analyze...")
 
 if audio_record and "bytes" in audio_record:
