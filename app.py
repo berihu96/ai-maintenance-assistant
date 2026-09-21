@@ -19,20 +19,29 @@ from streamlit_mic_recorder import mic_recorder
 from gtts import gTTS
 from groq import Groq
 
-# Safe EnsembleRetriever Import Fallback
-try:
-    from langchain.retrievers import EnsembleRetriever
-except ImportError:
-    try:
-        from langchain.retrievers.ensemble import EnsembleRetriever
-    except ImportError:
-        from langchain_community.retrievers import EnsembleRetriever
-
 # ReportLab for PDF Work Log Export
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+
+
+# Custom robust Ensemble Retriever class to eliminate import/version conflicts
+class SimpleEnsembleRetriever:
+    def __init__(self, retrievers):
+        self.retrievers = retrievers
+
+    def invoke(self, query):
+        combined_docs = []
+        seen_contents = set()
+        for retriever in self.retrievers:
+            docs = retriever.invoke(query)
+            for doc in docs:
+                if doc.page_content not in seen_contents:
+                    seen_contents.add(doc.page_content)
+                    combined_docs.append(doc)
+        return combined_docs
+
 
 # 1. Page Configuration
 st.set_page_config(
@@ -50,6 +59,7 @@ api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
 if not api_key:
     st.error("`GROQ_API_KEY` not found! Please configure it in Streamlit Cloud Secrets or set it as an environment variable.")
     st.stop()
+
 
 # 3. Helper Function: PDF Report Generator
 def generate_pdf_report(messages):
@@ -115,6 +125,7 @@ def generate_pdf_report(messages):
     buffer.seek(0)
     return buffer
 
+
 # 4. Sidebar Controls
 st.sidebar.header("📄 Upload Documentation")
 uploaded_file = st.sidebar.file_uploader("Upload manual (PDF or TXT)", type=["pdf", "txt"])
@@ -136,6 +147,7 @@ audio_record = mic_recorder(
 
 st.sidebar.divider()
 st.sidebar.header("📋 Export Maintenance Summary")
+
 
 # 5. Helper Function: Multimodal Vision Analysis
 def analyze_image_with_groq(image_bytes, user_prompt, key):
@@ -164,6 +176,7 @@ def analyze_image_with_groq(image_bytes, user_prompt, key):
     )
     return chat_completion.choices[0].message.content
 
+
 # 6. Helper Function: Speech-to-Text
 def transcribe_audio(audio_bytes, key):
     client = Groq(api_key=key)
@@ -175,6 +188,7 @@ def transcribe_audio(audio_bytes, key):
     )
     return transcription
 
+
 # 7. Helper Function: Text-to-Speech
 def generate_speech(text):
     clean_text = text.replace("#", "").replace("*", "").replace("-", "")
@@ -183,6 +197,7 @@ def generate_speech(text):
     tts.write_to_fp(audio_fp)
     audio_fp.seek(0)
     return audio_fp
+
 
 # 8. Persistent Indexing & Hybrid Search Creation
 INDEX_DIR = "faiss_index"
@@ -230,13 +245,13 @@ def setup_hybrid_retriever(file_bytes=None, file_name=None):
         bm25_retriever = BM25Retriever.from_documents(splits)
         bm25_retriever.k = 3
 
-        ensemble_retriever = EnsembleRetriever(
-            retrievers=[bm25_retriever, faiss_retriever],
-            weights=[0.5, 0.5]
+        ensemble_retriever = SimpleEnsembleRetriever(
+            retrievers=[bm25_retriever, faiss_retriever]
         )
         return ensemble_retriever, "hybrid"
     
     return faiss_retriever, "faiss_only"
+
 
 # 9. Hybrid Retriever Setup Initialization
 ensemble_retriever, search_mode = (
