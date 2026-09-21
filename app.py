@@ -9,6 +9,8 @@ import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
+from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers import EnsembleRetriever
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -33,7 +35,7 @@ st.set_page_config(
 )
 
 st.title("🔧 AI Maintenance Assistant")
-st.caption("Multimodal Field Tool: PDF/TXT RAG, Hands-Free Voice Control, Visual Anomaly Detection, and PDF Work Log Generator.")
+st.caption("Multimodal Field Tool: Hybrid RAG, Persistent Vector Storage, Hands-Free Voice Control, Visual Anomaly Detection, and PDF Work Log Generator.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -42,7 +44,7 @@ if not api_key:
     st.error("`GROQ_API_KEY` not found! Please configure it in Streamlit Cloud Secrets or set it as an environment variable.")
     st.stop()
 
-# 3. Helper Function: PDF Report Generator (Crash-Proof Sanitization)
+# 3. Helper Function: PDF Report Generator
 def generate_pdf_report(messages):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -96,10 +98,7 @@ def generate_pdf_report(messages):
         role_label = "<b>Technician Inquiry:</b>" if msg["role"] == "user" else "<b>Assistant Finding:</b>"
         style = user_style if msg["role"] == "user" else assistant_style
         
-        # 1. Escape XML reserved characters (&, <, >) to avoid ReportLab parser crashes
         text = html.escape(msg["content"])
-        
-        # 2. Safely convert line breaks for ReportLab flowables
         text = text.replace("\n", "<br/>")
         
         story.append(Paragraph(f"{role_label}<br/>{text}", style))
@@ -178,55 +177,84 @@ def generate_speech(text):
     audio_fp.seek(0)
     return audio_fp
 
-# 8. Helper Function: Index Documents for RAG
-@st.cache_resource(show_spinner="Processing and indexing manual...")
-def process_file(file_bytes, file_name):
+# 8. Persistent Indexing & Hybrid Search Creation
+INDEX_DIR = "faiss_index"
+
+@st.cache_resource(show_spinner="Processing documentation for Persistent Hybrid Search...")
+def setup_hybrid_retriever(file_bytes=None, file_name=None):
     documents = []
-    file_ext = os.path.splitext(file_name)[1].lower()
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-        tmp_file.write(file_bytes)
-        tmp_path = tmp_file.name
-
-    try:
-        if file_ext == ".pdf":
-            loader = PyPDFLoader(tmp_path)
-            documents.extend(loader.load())
-        elif file_ext == ".txt":
-            loader = TextLoader(tmp_path)
-            documents.extend(loader.load())
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-
-    if not documents:
-        return None
-
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    splits = text_splitter.split_documents(documents)
-
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    vectorstore = FAISS.from_documents(splits, embeddings)
-    return vectorstore
 
-# 9. Vector Store Setup
-vectorstore = None
+    # Custom uploaded file handling
+    if file_bytes and file_name:
+        file_ext = os.path.splitext(file_name)[1].lower()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+            tmp_file.write(file_bytes)
+            tmp_path = tmp_file.name
+
+        try:
+            if file_ext == ".pdf":
+                loader = PyPDFLoader(tmp_path)
+                documents.extend(loader.load())
+            elif file_ext == ".txt":
+                loader = TextLoader(tmp_path)
+                documents.extend(loader.load())
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+    # Default manual fallback
+    elif os.path.exists("manual.txt"):
+        loader = TextLoader("manual.txt")
+        documents.extend(loader.load())
+
+    if not documents and not os.path.exists(INDEX_DIR):
+        return None, None
+
+    # Split documents into chunks
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = text_splitter.split_documents(documents) if documents else []
+
+    # Persistence handling: Load existing index or create and save new one
+    if os.path.exists(INDEX_DIR) and not file_bytes:
+        vectorstore = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
+    else:
+        vectorstore = FAISS.from_documents(splits, embeddings)
+        vectorstore.save_local(INDEX_DIR)
+
+    # Dense FAISS Retriever
+    faiss_retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
+    # Sparse BM25 Retriever
+    if splits:
+        bm25_retriever = BM25Retriever.from_documents(splits)
+        bm25_retriever.k = 3
+
+        # Hybrid Ensemble Retriever (50% Dense, 50% Sparse BM25 Keyword)
+        ensemble_retriever = EnsembleRetriever(
+            retrievers=[bm25_retriever, faiss_retriever],
+            weights=[0.5, 0.5]
+        )
+        return ensemble_retriever, "hybrid"
+    
+    return faiss_retriever, "faiss_only"
+
+# 9. Hybrid Retriever Setup Initialization
+ensemble_retriever = None
+search_mode = None
 
 if uploaded_file is not None:
-    vectorstore = process_file(uploaded_file.getvalue(), uploaded_file.name)
-    st.sidebar.success(f"Indexed `{uploaded_file.name}` successfully!")
-elif os.path.exists("manual.txt"):
-    with open("manual.txt", "rb") as f:
-        vectorstore = process_file(f.read(), "manual.txt")
-    st.sidebar.info("Using default `manual.txt`.")
+    ensemble_retriever, search_mode = setup_hybrid_retriever(uploaded_file.getvalue(), uploaded_file.name)
+    st.sidebar.success(f"Indexed `{uploaded_file.name}` (Hybrid Search active)!")
 else:
-    st.sidebar.warning("Upload a manual or use visual analysis.")
+    ensemble_retriever, search_mode = setup_hybrid_retriever()
+    if ensemble_retriever:
+        st.sidebar.info("⚡ Persistent Hybrid Search (BM25 + FAISS) ready.")
+    else:
+        st.sidebar.warning("Upload a manual or rely on visual analysis.")
 
-# 10. RAG Chain Setup with Multi-Turn Memory
+# 10. RAG Chain Setup
 rag_chain = None
-if vectorstore:
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-
+if ensemble_retriever:
     llm = ChatGroq(
         groq_api_key=api_key,
         model_name="openai/gpt-oss-120b",
@@ -253,7 +281,7 @@ Context:
 
     rag_chain = (
         {
-            "context": (lambda x: x["question"]) | retriever | format_docs,
+            "context": (lambda x: x["question"]) | ensemble_retriever | format_docs,
             "chat_history": lambda x: x["chat_history"],
             "question": lambda x: x["question"],
         }
@@ -285,7 +313,7 @@ for message in st.session_state.messages:
         if "audio" in message:
             st.audio(message["audio"], format="audio/mp3")
 
-# 12. Input Processing (Text, Speech, or Photo)
+# 12. Input Processing
 user_input = st.chat_input("Ask a question or upload a photo to analyze...")
 
 if audio_record and "bytes" in audio_record:
@@ -306,7 +334,7 @@ if user_input or uploaded_image:
         st.markdown(current_prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing request..."):
+        with st.spinner("Analyzing request via Hybrid RAG..."):
             combined_response = ""
 
             # Visual Defect Analysis
@@ -316,7 +344,7 @@ if user_input or uploaded_image:
                 st.markdown(vision_analysis)
                 combined_response += f"### Visual Inspection Findings\n{vision_analysis}\n\n"
 
-            # Manual Documentation RAG Search
+            # Manual Documentation Hybrid RAG Search
             if rag_chain:
                 chat_history = []
                 for msg in st.session_state.messages[:-1]:
