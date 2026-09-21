@@ -1,6 +1,7 @@
 ﻿import os
+import tempfile
 import streamlit as st
-from langchain_community.document_loaders import TextLoader, PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -17,7 +18,7 @@ st.set_page_config(
 )
 
 st.title("🔧 RAG Maintenance Assistant")
-st.caption("Upload technical manuals to query troubleshooting procedures and safety guidelines.")
+st.caption("Upload technical manuals (PDF or TXT) to query troubleshooting procedures and safety guidelines.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -26,16 +27,32 @@ if not api_key:
     st.error("`GROQ_API_KEY` not found! Please configure it in Streamlit Cloud Secrets or set it as an environment variable.")
     st.stop()
 
-# 3. Cache Vector Store Creation
-@st.cache_resource(show_spinner="Indexing documentation...")
-def get_vectorstore():
+# 3. Sidebar File Uploader
+st.sidebar.header("📄 Upload Documentation")
+uploaded_file = st.sidebar.file_uploader("Upload a manual (PDF or TXT)", type=["pdf", "txt"])
+
+# 4. Helper Function to Build Vector Store from Uploaded File or Default File
+@st.cache_resource(show_spinner="Processing and indexing manual...")
+def process_file(file_bytes, file_name):
     documents = []
-    
-    # Load local manual.txt if present
-    if os.path.exists("manual.txt"):
-        loader = TextLoader("manual.txt")
-        documents.extend(loader.load())
-        
+    file_ext = os.path.splitext(file_name)[1].lower()
+
+    # Save uploaded file temporarily to process with LangChain loaders
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+        tmp_file.write(file_bytes)
+        tmp_path = tmp_file.name
+
+    try:
+        if file_ext == ".pdf":
+            loader = PyPDFLoader(tmp_path)
+            documents.extend(loader.load())
+        elif file_ext == ".txt":
+            loader = TextLoader(tmp_path)
+            documents.extend(loader.load())
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
     if not documents:
         return None
 
@@ -46,9 +63,23 @@ def get_vectorstore():
     vectorstore = FAISS.from_documents(splits, embeddings)
     return vectorstore
 
-vectorstore = get_vectorstore()
+# 5. Determine Vector Store Source
+vectorstore = None
 
-# 4. RAG Chain Initialization
+if uploaded_file is not None:
+    # Process user uploaded file
+    vectorstore = process_file(uploaded_file.getvalue(), uploaded_file.name)
+    st.sidebar.success(f"Indexed `{uploaded_file.name}` successfully!")
+elif os.path.exists("manual.txt"):
+    # Fallback to local manual.txt if present
+    with open("manual.txt", "rb") as f:
+        vectorstore = process_file(f.read(), "manual.txt")
+    st.sidebar.info("Using default `manual.txt`.")
+else:
+    st.sidebar.warning("Please upload a PDF or TXT manual to begin.")
+
+# 6. RAG Chain Initialization
+rag_chain = None
 if vectorstore:
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
@@ -83,7 +114,7 @@ if vectorstore:
         | StrOutputParser()
     )
 
-# 5. Session State & Chat UI
+# 7. Session State & Chat UI
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -96,14 +127,14 @@ if user_input := st.chat_input("Ask a maintenance or troubleshooting question...
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    if not vectorstore:
+    if not rag_chain:
         with st.chat_message("assistant"):
-            response = "No technical manuals found to query. Please ensure `manual.txt` exists in your repository."
+            response = "No active documentation found. Please upload a PDF or TXT manual using the sidebar."
             st.markdown(response)
             st.session_state.messages.append({"role": "assistant", "content": response})
     else:
         with st.chat_message("assistant"):
-            with st.spinner("Searching manual and generating response..."):
+            with st.spinner("Searching document and generating response..."):
                 response = rag_chain.invoke(user_input)
                 st.markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
