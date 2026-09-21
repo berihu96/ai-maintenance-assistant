@@ -5,6 +5,8 @@ import base64
 import html
 import datetime
 from PIL import Image
+import numpy as np
+import cv2
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -51,7 +53,7 @@ st.set_page_config(
 )
 
 st.title("🔧 AI Maintenance Assistant")
-st.caption("Multimodal Field Tool: Hybrid RAG, Citation Tracking, Maintenance Scheduler, Multi-Language Voice Control, Vision Analysis, and PDF Work Logs.")
+st.caption("Multimodal Field Tool: QR Equipment Lock, Hybrid RAG, Citation Tracking, Maintenance Scheduler, Multi-Language Voice, Vision Analysis, and PDF Work Logs.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -62,7 +64,7 @@ if not api_key:
 
 
 # 3. Helper Function: PDF Report Generator
-def generate_pdf_report(messages):
+def generate_pdf_report(messages, active_tag=None):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -107,7 +109,10 @@ def generate_pdf_report(messages):
     )
 
     story.append(Paragraph("🔧 AI Maintenance Assistant - Work Log Report", title_style))
-    story.append(Paragraph(f"<b>Generated:</b> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", meta_style))
+    meta_info = f"<b>Generated:</b> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    if active_tag:
+        meta_info += f" | <b>Equipment Tag:</b> {active_tag}"
+    story.append(Paragraph(meta_info, meta_style))
     story.append(Spacer(1, 12))
     story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#CBD5E1"), spaceAfter=12))
 
@@ -126,7 +131,23 @@ def generate_pdf_report(messages):
     return buffer
 
 
-# 4. Sidebar Controls
+# 4. Helper Function: QR/Barcode Detection using OpenCV
+def scan_qr_code(image_bytes):
+    try:
+        # Convert image bytes to OpenCV format
+        file_bytes = np.asarray(bytearray(image_bytes), dtype=uint8)
+        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        
+        detector = cv2.QRCodeDetector()
+        data, bbox, _ = detector.detectAndDecode(img)
+        if data:
+            return data.strip()
+    except Exception as e:
+        st.sidebar.error(f"QR Scan error: {e}")
+    return None
+
+
+# 5. Sidebar Controls
 st.sidebar.header("🌐 Language Settings")
 LANGUAGE_MAP = {
     "English 🇺🇸": {"code": "en", "name": "English"},
@@ -138,6 +159,28 @@ LANGUAGE_MAP = {
 selected_lang_label = st.sidebar.selectbox("Preferred Language / ቋንቋ", list(LANGUAGE_MAP.keys()), index=0)
 selected_lang_code = LANGUAGE_MAP[selected_lang_label]["code"]
 selected_lang_name = LANGUAGE_MAP[selected_lang_label]["name"]
+
+st.sidebar.divider()
+st.sidebar.header("🏷️ Equipment QR/Barcode Scanner")
+
+if "active_qr_tag" not in st.session_state:
+    st.session_state.active_qr_tag = None
+
+camera_photo = st.sidebar.camera_input("Scan Equipment Tag QR")
+
+if camera_photo is not None:
+    detected_qr = scan_qr_code(camera_photo.getvalue())
+    if detected_qr:
+        st.session_state.active_qr_tag = detected_qr
+        st.sidebar.success(f"Locked on Tag: **{detected_qr}**")
+    else:
+        st.sidebar.warning("No QR Code detected in photo. Try adjusting light or focus.")
+
+if st.session_state.active_qr_tag:
+    st.sidebar.info(f"🏷️ **Active Target:** `{st.session_state.active_qr_tag}`")
+    if st.sidebar.button("Clear QR Target"):
+        st.session_state.active_qr_tag = None
+        st.rerun()
 
 st.sidebar.divider()
 st.sidebar.header("📄 Upload Documentation")
@@ -177,13 +220,15 @@ st.sidebar.divider()
 st.sidebar.header("📋 Export Maintenance Summary")
 
 
-# 5. Helper Function: Multimodal Vision Analysis
-def analyze_image_with_groq(image_bytes, user_prompt, lang_name, key):
+# 6. Helper Function: Multimodal Vision Analysis
+def analyze_image_with_groq(image_bytes, user_prompt, lang_name, key, active_tag=None):
     client = Groq(api_key=key)
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
     
-    prompt = user_prompt if user_prompt else f"Inspect this equipment photo. Describe visible defects, rust, wear, cracks, or electrical issues, and list action items. Respond completely in {lang_name}."
-    if lang_name != "English" and user_prompt:
+    prompt = user_prompt if user_prompt else f"Inspect this equipment photo. Describe visible defects, rust, wear, cracks, or electrical issues, and list action items."
+    if active_tag:
+        prompt = f"[Target Equipment Model/Tag: {active_tag}] " + prompt
+    if lang_name != "English":
         prompt += f" Respond in {lang_name}."
 
     chat_completion = client.chat.completions.create(
@@ -207,7 +252,7 @@ def analyze_image_with_groq(image_bytes, user_prompt, lang_name, key):
     return chat_completion.choices[0].message.content
 
 
-# 6. Helper Function: Speech-to-Text (Dynamic Language)
+# 7. Helper Function: Speech-to-Text
 def transcribe_audio(audio_bytes, lang_code, key):
     client = Groq(api_key=key)
     audio_file = ("audio.wav", audio_bytes, "audio/wav")
@@ -220,7 +265,7 @@ def transcribe_audio(audio_bytes, lang_code, key):
     return transcription
 
 
-# 7. Helper Function: Text-to-Speech (Dynamic Language)
+# 8. Helper Function: Text-to-Speech
 def generate_speech(text, lang_code):
     clean_text = text.replace("#", "").replace("*", "").replace("-", "")
     tts = gTTS(text=clean_text, lang=lang_code)
@@ -230,7 +275,7 @@ def generate_speech(text, lang_code):
     return audio_fp
 
 
-# 8. Persistent Indexing & Hybrid Search Creation
+# 9. Persistent Indexing & Hybrid Search Creation
 INDEX_DIR = "faiss_index"
 
 @st.cache_resource(show_spinner="Processing documentation for Persistent Hybrid Search...")
@@ -284,7 +329,7 @@ def setup_hybrid_retriever(file_bytes=None, file_name=None):
     return faiss_retriever, "faiss_only"
 
 
-# 9. Hybrid Retriever Setup Initialization
+# 10. Hybrid Retriever Setup Initialization
 ensemble_retriever, search_mode = (
     setup_hybrid_retriever(uploaded_file.getvalue(), uploaded_file.name)
     if uploaded_file is not None
@@ -296,7 +341,7 @@ if ensemble_retriever:
 else:
     st.sidebar.warning("Upload a manual or rely on visual analysis.")
 
-# 10. RAG Model Setup
+# 11. RAG Model Setup
 llm = ChatGroq(
     groq_api_key=api_key,
     model_name="openai/gpt-oss-120b",
@@ -320,8 +365,12 @@ Context:
     ("human", "{question}")
 ]) if ensemble_retriever else None
 
-# 11. Maintenance Scheduler Display Component
+# 12. Maintenance Scheduler Display Component
 st.subheader("⏱️ Preventive Maintenance Status")
+
+if st.session_state.active_qr_tag:
+    st.success(f"🏷️ **Active Machine Target:** `{st.session_state.active_qr_tag}`")
+
 col1, col2, col3, col4 = st.columns(4)
 
 cols = [col1, col2, col3, col4]
@@ -354,17 +403,18 @@ else:
 
 st.divider()
 
-# 12. Session State & Chat UI Render
+# 13. Session State & Chat UI Render
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # Action triggered by "Generate Preventive Checklist" button
 if gen_checklist:
-    checklist_prompt = f"Generate a comprehensive preventive maintenance checklist in {selected_lang_name} for equipment currently at {op_hours} operating hours, with last service recorded on {last_service}. Highlight key inspection tasks for overdue or upcoming items."
+    target_str = f" for equipment [{st.session_state.active_qr_tag}]" if st.session_state.active_qr_tag else ""
+    checklist_prompt = f"Generate a comprehensive preventive maintenance checklist in {selected_lang_name}{target_str} currently at {op_hours} operating hours, with last service recorded on {last_service}. Highlight key inspection tasks for overdue or upcoming items."
     st.session_state.messages.append({"role": "user", "content": checklist_prompt})
 
 if st.session_state.messages:
-    pdf_data = generate_pdf_report(st.session_state.messages)
+    pdf_data = generate_pdf_report(st.session_state.messages, st.session_state.active_qr_tag)
     st.sidebar.download_button(
         label="📥 Download PDF Work Log",
         data=pdf_data,
@@ -388,7 +438,7 @@ for message in st.session_state.messages:
         if "audio" in message:
             st.audio(message["audio"], format="audio/mp3")
 
-# 13. Input Processing
+# 14. Input Processing
 user_input = st.chat_input(f"Ask a question ({selected_lang_name}) or upload a photo to analyze...")
 
 if audio_record and "bytes" in audio_record:
@@ -416,16 +466,25 @@ if user_input or uploaded_image or (gen_checklist and st.session_state.messages 
             combined_response = ""
             retrieved_docs = []
 
+            # Append QR Equipment Tag filter to user search query if present
+            rag_query = f"[{st.session_state.active_qr_tag}] {current_prompt}" if st.session_state.active_qr_tag else current_prompt
+
             # Visual Defect Analysis
             if uploaded_image:
                 st.markdown("### 📸 Visual Defect Inspection")
-                vision_analysis = analyze_image_with_groq(uploaded_image.getvalue(), current_prompt, selected_lang_name, api_key)
+                vision_analysis = analyze_image_with_groq(
+                    uploaded_image.getvalue(), 
+                    current_prompt, 
+                    selected_lang_name, 
+                    api_key, 
+                    st.session_state.active_qr_tag
+                )
                 st.markdown(vision_analysis)
                 combined_response += f"### Visual Inspection Findings\n{vision_analysis}\n\n"
 
             # Manual Documentation Hybrid RAG Search with Citations
             if ensemble_retriever and llm and prompt:
-                retrieved_docs = ensemble_retriever.invoke(current_prompt)
+                retrieved_docs = ensemble_retriever.invoke(rag_query)
                 context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
 
                 chat_history = []
@@ -439,7 +498,7 @@ if user_input or uploaded_image or (gen_checklist and st.session_state.messages 
                 rag_response = chain.invoke({
                     "context": context_text,
                     "chat_history": chat_history,
-                    "question": current_prompt
+                    "question": rag_query
                 })
                 
                 if uploaded_image:
@@ -455,7 +514,7 @@ if user_input or uploaded_image or (gen_checklist and st.session_state.messages 
                             st.markdown(f"**Source {idx}{page_str}:**")
                             st.caption(doc.page_content)
             elif not uploaded_image:
-                response_msg = f"No active documentation found. Please upload a PDF/TXT manual or an image for inspection."
+                response_msg = "No active documentation found. Please upload a PDF/TXT manual or an image for inspection."
                 st.markdown(response_msg)
                 combined_response = response_msg
 
