@@ -2,6 +2,7 @@
 import tempfile
 import io
 import base64
+import datetime
 from PIL import Image
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
@@ -17,15 +18,21 @@ from streamlit_mic_recorder import mic_recorder
 from gtts import gTTS
 from groq import Groq
 
+# ReportLab for PDF Work Log Export
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
 # 1. Page Configuration
 st.set_page_config(
-    page_title="RAG Maintenance Assistant",
+    page_title="AI Maintenance Assistant",
     page_icon="🔧",
     layout="wide"
 )
 
-st.title("🔧 RAG Maintenance Assistant")
-st.caption("Multimodal AI Maintenance Assistant: PDF/TXT Manual RAG, Voice Control, Chat Memory, and Visual Defect Analysis.")
+st.title("🔧 AI Maintenance Assistant")
+st.caption("Multimodal Field Tool: PDF/TXT RAG, Hands-Free Voice Control, Visual Anomaly Detection, and PDF Work Log Generator.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -34,7 +41,71 @@ if not api_key:
     st.error("`GROQ_API_KEY` not found! Please configure it in Streamlit Cloud Secrets or set it as an environment variable.")
     st.stop()
 
-# 3. Sidebar Controls (Document, Audio, and Image Uploads)
+# 3. Helper Function: PDF Report Generator
+def generate_pdf_report(messages):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=36,
+        leftMargin=36,
+        topMargin=36,
+        bottomMargin=36
+    )
+    styles = getSampleStyleSheet()
+    story = []
+
+    title_style = ParagraphStyle(
+        'ReportTitle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        leading=22,
+        textColor=colors.HexColor("#1E3A8A")
+    )
+    meta_style = ParagraphStyle(
+        'ReportMeta',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14,
+        textColor=colors.gray
+    )
+    user_style = ParagraphStyle(
+        'UserMsg',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#0F172A"),
+        backColor=colors.HexColor("#F1F5F9"),
+        borderPadding=6
+    )
+    assistant_style = ParagraphStyle(
+        'AssistantMsg',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#1E293B")
+    )
+
+    story.append(Paragraph("🔧 AI Maintenance Assistant - Work Log Report", title_style))
+    story.append(Paragraph(f"<b>Generated:</b> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", meta_style))
+    story.append(Spacer(1, 12))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#CBD5E1"), spaceAfter=12))
+
+    for msg in messages:
+        role_label = "<b>Technician Inquiry:</b>" if msg["role"] == "user" else "<b>Assistant Finding:</b>"
+        style = user_style if msg["role"] == "user" else assistant_style
+        
+        # Format markdown markers for PDF flowable text
+        clean_content = msg["content"].replace("###", "<b>").replace("**", "<b>").replace("\n", "<br/>")
+        
+        story.append(Paragraph(f"{role_label}<br/>{clean_content}", style))
+        story.append(Spacer(1, 8))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+# 4. Sidebar Controls (Documents, Vision, Voice, and Report Export)
 st.sidebar.header("📄 Upload Documentation")
 uploaded_file = st.sidebar.file_uploader("Upload manual (PDF or TXT)", type=["pdf", "txt"])
 
@@ -53,12 +124,15 @@ audio_record = mic_recorder(
     key="voice_input"
 )
 
-# 4. Helper Function: Multimodal Vision Analysis
+st.sidebar.divider()
+st.sidebar.header("📋 Export Maintenance Summary")
+
+# 5. Helper Function: Multimodal Vision Analysis (Groq Llama 3.2 Vision)
 def analyze_image_with_groq(image_bytes, user_prompt, key):
     client = Groq(api_key=key)
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
     
-    prompt = user_prompt if user_prompt else "Inspect this equipment photo. Describe any visible defects, rust, wear, cracks, or electrical anomalies, and list recommended maintenance steps."
+    prompt = user_prompt if user_prompt else "Inspect this equipment photo. Describe visible defects, rust, wear, cracks, or electrical issues, and list action items."
     
     chat_completion = client.chat.completions.create(
         messages=[
@@ -80,7 +154,7 @@ def analyze_image_with_groq(image_bytes, user_prompt, key):
     )
     return chat_completion.choices[0].message.content
 
-# 5. Helper Function: Speech to Text (Groq Whisper)
+# 6. Helper Function: Speech-to-Text (Groq Whisper)
 def transcribe_audio(audio_bytes, key):
     client = Groq(api_key=key)
     audio_file = ("audio.wav", audio_bytes, "audio/wav")
@@ -91,7 +165,7 @@ def transcribe_audio(audio_bytes, key):
     )
     return transcription
 
-# 6. Helper Function: Text to Speech (gTTS)
+# 7. Helper Function: Text-to-Speech (gTTS)
 def generate_speech(text):
     clean_text = text.replace("#", "").replace("*", "").replace("-", "")
     tts = gTTS(text=clean_text, lang="en")
@@ -100,7 +174,7 @@ def generate_speech(text):
     audio_fp.seek(0)
     return audio_fp
 
-# 7. Helper Function: Index Documents for RAG
+# 8. Helper Function: Index Documents for RAG
 @st.cache_resource(show_spinner="Processing and indexing manual...")
 def process_file(file_bytes, file_name):
     documents = []
@@ -131,7 +205,7 @@ def process_file(file_bytes, file_name):
     vectorstore = FAISS.from_documents(splits, embeddings)
     return vectorstore
 
-# 8. Vector Store Initialization
+# 9. Vector Store Setup
 vectorstore = None
 
 if uploaded_file is not None:
@@ -142,9 +216,9 @@ elif os.path.exists("manual.txt"):
         vectorstore = process_file(f.read(), "manual.txt")
     st.sidebar.info("Using default `manual.txt`.")
 else:
-    st.sidebar.warning("Upload a manual or rely on visual analysis.")
+    st.sidebar.warning("Upload a manual or use visual analysis.")
 
-# 9. RAG Chain Setup
+# 10. RAG Chain Setup with Multi-Turn Memory
 rag_chain = None
 if vectorstore:
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
@@ -184,30 +258,42 @@ Context:
         | StrOutputParser()
     )
 
-# 10. Session State & Chat Display
+# 11. Session State & Chat UI Render
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Sidebar PDF Download Button
+if st.session_state.messages:
+    pdf_data = generate_pdf_report(st.session_state.messages)
+    st.sidebar.download_button(
+        label="📥 Download PDF Work Log",
+        data=pdf_data,
+        file_name=f"maintenance_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+        mime="application/pdf"
+    )
+else:
+    st.sidebar.caption("Complete a chat interaction to unlock the PDF report generator.")
+
+# Render previous chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if "audio" in message:
             st.audio(message["audio"], format="audio/mp3")
 
-# Handle input sources
+# 12. Input Processing (Text, Speech, or Photo)
 user_input = st.chat_input("Ask a question or upload a photo to analyze...")
 
 if audio_record and "bytes" in audio_record:
-    with st.spinner("Transcribing voice command..."):
+    with st.spinner("Transcribing audio input via Groq Whisper..."):
         try:
             transcribed_text = transcribe_audio(audio_record["bytes"], api_key)
             if transcribed_text.strip():
                 user_input = transcribed_text.strip()
-                st.sidebar.info(f"🎙️ **Recorded:** \"{user_input}\"")
+                st.sidebar.info(f"🎙️ **Transcribed:** \"{user_input}\"")
         except Exception as e:
-            st.sidebar.error(f"Transcription error: {e}")
+            st.sidebar.error(f"Voice transcription error: {e}")
 
-# 11. Process Execution
 if user_input or uploaded_image:
     current_prompt = user_input if user_input else "Analyze the attached image for mechanical defects."
     
@@ -219,14 +305,14 @@ if user_input or uploaded_image:
         with st.spinner("Analyzing request..."):
             combined_response = ""
 
-            # Vision analysis execution
+            # Visual Defect Analysis
             if uploaded_image:
                 st.markdown("### 📸 Visual Defect Inspection")
                 vision_analysis = analyze_image_with_groq(uploaded_image.getvalue(), current_prompt, api_key)
                 st.markdown(vision_analysis)
-                combined_response += f"### Visual Inspection\n{vision_analysis}\n\n"
+                combined_response += f"### Visual Inspection Findings\n{vision_analysis}\n\n"
 
-            # Manual RAG search execution
+            # Manual Documentation RAG Search
             if rag_chain:
                 chat_history = []
                 for msg in st.session_state.messages[:-1]:
@@ -241,15 +327,15 @@ if user_input or uploaded_image:
                 })
                 
                 if uploaded_image:
-                    st.markdown("### 📄 Related Documentation Findings")
+                    st.markdown("### 📄 Related Documentation Guidance")
                 st.markdown(rag_response)
-                combined_response += f"### Documentation Guidance\n{rag_response}"
+                combined_response += f"### Manual Documentation Guidance\n{rag_response}"
             elif not uploaded_image:
                 response_msg = "No active documentation found. Please upload a PDF/TXT manual or an image for inspection."
                 st.markdown(response_msg)
                 combined_response = response_msg
 
-            # Audio Speech Output Generation
+            # Generate Speech Output
             audio_fp = generate_speech(combined_response)
             st.audio(audio_fp, format="audio/mp3")
 
@@ -258,3 +344,4 @@ if user_input or uploaded_image:
                 "content": combined_response,
                 "audio": audio_fp
             })
+            st.rerun()
