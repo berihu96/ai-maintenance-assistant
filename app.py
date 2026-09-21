@@ -8,6 +8,7 @@ import datetime
 from PIL import Image
 import numpy as np
 import cv2
+import pandas as pd
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -55,7 +56,7 @@ st.set_page_config(
 )
 
 st.title("🔧 AI Maintenance Assistant")
-st.caption("Multimodal Field Tool: QR Equipment Lock, Hybrid RAG, Citation Tracking, Maintenance Scheduler, Multi-Language Voice, Speed Control, Vision Analysis, PDF Work Logs, and Feedback Loops.")
+st.caption("Multimodal Field Tool: QR Equipment Lock, Hybrid RAG, Citation Tracking, Maintenance Scheduler, Multi-Language Voice, Speed Control, IoT Telemetry, Vision Analysis, and PDF Work Logs.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -175,7 +176,6 @@ selected_lang_label = st.sidebar.selectbox("Preferred Language / ቋንቋ", lis
 selected_lang_code = LANGUAGE_MAP[selected_lang_label]["code"]
 selected_lang_name = LANGUAGE_MAP[selected_lang_label]["name"]
 
-# Option 2: Compact Audio Playback Speed Selector (Dropdown style)
 playback_speed = st.sidebar.selectbox(
     "🎙️ Voice Playback Speed",
     options=[0.75, 1.0, 1.25, 1.5],
@@ -242,22 +242,6 @@ audio_record = mic_recorder(
     key="voice_input"
 )
 
-st.sidebar.divider()
-st.sidebar.header("📋 Export Maintenance Summary")
-
-# Manager Feedback Export Control
-if os.path.exists(FEEDBACK_FILE):
-    with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
-        csv_data = f.read()
-    st.sidebar.download_button(
-        label="📊 Download Feedback Log (CSV)",
-        data=csv_data,
-        file_name=f"technician_feedback_log_{datetime.datetime.now().strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
-else:
-    st.sidebar.caption("No technician feedback recorded yet.")
-
 
 # 7. Helper Function: Multimodal Vision Analysis
 def analyze_image_with_groq(image_bytes, user_prompt, lang_name, key, active_tag=None):
@@ -313,7 +297,6 @@ def generate_speech(text, lang_code, speed_factor=1.0):
     tts.write_to_fp(raw_audio_fp)
     raw_audio_fp.seek(0)
 
-    # Adjust playback speed if non-default using pydub
     if speed_factor != 1.0:
         try:
             sound = AudioSegment.from_file(raw_audio_fp, format="mp3")
@@ -356,6 +339,9 @@ def setup_hybrid_retriever(file_bytes=None, file_name=None):
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+    elif os.path.exists("motor_manual.txt"):
+        loader = TextLoader("motor_manual.txt")
+        documents.extend(loader.load())
     elif os.path.exists("manual.txt"):
         loader = TextLoader("manual.txt")
         documents.extend(loader.load())
@@ -394,7 +380,7 @@ ensemble_retriever, search_mode = (
 )
 
 if ensemble_retriever:
-    st.sidebar.info("⚡ Persistent Hybrid Search (BM25 + FAISS) ready.")
+    st.sidebar.info("⚡ Persistent Hybrid Search ready.")
 else:
     st.sidebar.warning("Upload a manual or rely on visual analysis.")
 
@@ -422,17 +408,15 @@ Context:
     ("human", "{question}")
 ]) if ensemble_retriever else None
 
-# 13. Maintenance Scheduler Display Component
+# 13. Top Maintenance Scheduler Status Header
 st.subheader("⏱️ Preventive Maintenance Status")
 
 if st.session_state.active_qr_tag:
     st.success(f"🏷️ **Active Machine Target:** `{st.session_state.active_qr_tag}`")
 
 col1, col2, col3, col4 = st.columns(4)
-
 cols = [col1, col2, col3, col4]
 idx = 0
-
 overdue_items = []
 due_soon_items = []
 
@@ -460,7 +444,7 @@ else:
 
 st.divider()
 
-# 14. Session State & Chat UI Render
+# Session State Init
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -470,158 +454,210 @@ if gen_checklist:
     checklist_prompt = f"Generate a comprehensive preventive maintenance checklist in {selected_lang_name}{target_str} currently at {op_hours} operating hours, with last service recorded on {last_service}. Highlight key inspection tasks for overdue or upcoming items."
     st.session_state.messages.append({"role": "user", "content": checklist_prompt})
 
-if st.session_state.messages:
-    pdf_data = generate_pdf_report(st.session_state.messages, st.session_state.active_qr_tag)
-    st.sidebar.download_button(
-        label="📥 Download PDF Work Log",
-        data=pdf_data,
-        file_name=f"maintenance_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-        mime="application/pdf"
-    )
-else:
-    st.sidebar.caption("Complete a chat interaction to unlock the PDF report generator.")
+# 14. Multi-Tab Architecture Layout
+tab1, tab2, tab3 = st.tabs(["💬 Field Assistant", "📈 Telemetry & Anomalies", "📋 Work Logs & Export"])
 
-# Render previous chat history with Feedback Loop controls
-for msg_idx, message in enumerate(st.session_state.messages):
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        
-        if "sources" in message and message["sources"]:
-            with st.expander("📚 View Reference Sources & Citations"):
-                for idx, doc in enumerate(message["sources"], 1):
-                    page = doc.metadata.get("page", None)
-                    page_str = f" (Page {page + 1})" if page is not None else ""
-                    st.markdown(f"**Source {idx}{page_str}:**")
-                    st.caption(doc.page_content)
-        
-        if "audio" in message:
-            st.audio(message["audio"], format="audio/mp3")
-
-        # Feedback Loop: Rating buttons for assistant responses
-        if message["role"] == "assistant":
-            rating_key = f"rating_{msg_idx}"
-            user_prev_prompt = st.session_state.messages[msg_idx - 1]["content"] if msg_idx > 0 else "N/A"
+# ================= TAB 1: FIELD ASSISTANT =================
+with tab1:
+    # Render previous chat history with Feedback Loop controls
+    for msg_idx, message in enumerate(st.session_state.messages):
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
             
-            if rating_key not in st.session_state:
-                st.session_state[rating_key] = None
+            if "sources" in message and message["sources"]:
+                with st.expander("📚 View Reference Sources & Citations"):
+                    for idx, doc in enumerate(message["sources"], 1):
+                        page = doc.metadata.get("page", None)
+                        page_str = f" (Page {page + 1})" if page is not None else ""
+                        st.markdown(f"**Source {idx}{page_str}:**")
+                        st.caption(doc.page_content)
+            
+            if "audio" in message:
+                st.audio(message["audio"], format="audio/mp3")
 
-            f_col1, f_col2, f_col3 = st.columns()
-            with f_col1:
-                if st.button("👍", key=f"up_{msg_idx}"):
-                    st.session_state[rating_key] = "thumbs_up"
-                    log_feedback_to_csv(
-                        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        user_prev_prompt,
-                        message["content"],
-                        "thumbs_up",
-                        st.session_state.active_qr_tag,
-                        message.get("sources", [])
-                    )
-            with f_col2:
-                if st.button("👎", key=f"down_{msg_idx}"):
-                    st.session_state[rating_key] = "thumbs_down"
-                    log_feedback_to_csv(
-                        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        user_prev_prompt,
-                        message["content"],
-                        "thumbs_down",
-                        st.session_state.active_qr_tag,
-                        message.get("sources", [])
-                    )
-
-            if st.session_state[rating_key] == "thumbs_up":
-                st.caption("👍 *Feedback recorded: Helpful!*")
-            elif st.session_state[rating_key] == "thumbs_down":
-                st.caption("👎 *Feedback recorded: Needs improvement.*")
-
-# 15. Input Processing
-user_input = st.chat_input(f"Ask a question ({selected_lang_name}) or upload a photo to analyze...")
-
-if audio_record and "bytes" in audio_record:
-    with st.spinner(f"Transcribing audio in {selected_lang_name} via Groq Whisper..."):
-        try:
-            transcribed_text = transcribe_audio(audio_record["bytes"], selected_lang_code, api_key)
-            if transcribed_text.strip():
-                user_input = transcribed_text.strip()
-                st.sidebar.info(f"🎙️ **Transcribed ({selected_lang_name}):** \"{user_input}\"")
-        except Exception as e:
-            st.sidebar.error(f"Voice transcription error: {e}")
-
-# Process triggered message (from chat input or generate checklist button)
-if user_input or uploaded_image or (gen_checklist and st.session_state.messages and st.session_state.messages[-1]["role"] == "user"):
-    if gen_checklist and not user_input:
-        current_prompt = st.session_state.messages[-1]["content"]
-    else:
-        current_prompt = user_input if user_input else f"Analyze the attached image for mechanical defects. Provide findings in {selected_lang_name}."
-        st.session_state.messages.append({"role": "user", "content": current_prompt})
-        with st.chat_message("user"):
-            st.markdown(current_prompt)
-
-    with st.chat_message("assistant"):
-        with st.spinner(f"Analyzing request in {selected_lang_name} via Hybrid RAG..."):
-            combined_response = ""
-            retrieved_docs = []
-
-            # Append QR Equipment Tag filter to user search query if present
-            rag_query = f"[{st.session_state.active_qr_tag}] {current_prompt}" if st.session_state.active_qr_tag else current_prompt
-
-            # Visual Defect Analysis
-            if uploaded_image:
-                st.markdown("### 📸 Visual Defect Inspection")
-                vision_analysis = analyze_image_with_groq(
-                    uploaded_image.getvalue(), 
-                    current_prompt, 
-                    selected_lang_name, 
-                    api_key, 
-                    st.session_state.active_qr_tag
-                )
-                st.markdown(vision_analysis)
-                combined_response += f"### Visual Inspection Findings\n{vision_analysis}\n\n"
-
-            # Manual Documentation Hybrid RAG Search with Citations
-            if ensemble_retriever and llm and prompt:
-                retrieved_docs = ensemble_retriever.invoke(rag_query)
-                context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
-
-                chat_history = []
-                for msg in st.session_state.messages[:-1]:
-                    if msg["role"] == "user":
-                        chat_history.append(HumanMessage(content=msg["content"]))
-                    elif msg["role"] == "assistant":
-                        chat_history.append(AIMessage(content=msg["content"]))
-
-                chain = prompt | llm | StrOutputParser()
-                rag_response = chain.invoke({
-                    "context": context_text,
-                    "chat_history": chat_history,
-                    "question": rag_query
-                })
+            if message["role"] == "assistant":
+                rating_key = f"rating_{msg_idx}"
+                user_prev_prompt = st.session_state.messages[msg_idx - 1]["content"] if msg_idx > 0 else "N/A"
                 
+                if rating_key not in st.session_state:
+                    st.session_state[rating_key] = None
+
+                f_col1, f_col2, f_col3 = st.columns()
+                with f_col1:
+                    if st.button("👍", key=f"up_{msg_idx}"):
+                        st.session_state[rating_key] = "thumbs_up"
+                        log_feedback_to_csv(
+                            datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            user_prev_prompt,
+                            message["content"],
+                            "thumbs_up",
+                            st.session_state.active_qr_tag,
+                            message.get("sources", [])
+                        )
+                with f_col2:
+                    if st.button("👎", key=f"down_{msg_idx}"):
+                        st.session_state[rating_key] = "thumbs_down"
+                        log_feedback_to_csv(
+                            datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            user_prev_prompt,
+                            message["content"],
+                            "thumbs_down",
+                            st.session_state.active_qr_tag,
+                            message.get("sources", [])
+                        )
+
+                if st.session_state[rating_key] == "thumbs_up":
+                    st.caption("👍 *Feedback recorded: Helpful!*")
+                elif st.session_state[rating_key] == "thumbs_down":
+                    st.caption("👎 *Feedback recorded: Needs improvement.*")
+
+    # Input Processing for Tab 1
+    user_input = st.chat_input(f"Ask a question ({selected_lang_name}) or upload a photo to analyze...")
+
+    if audio_record and "bytes" in audio_record:
+        with st.spinner(f"Transcribing audio in {selected_lang_name} via Groq Whisper..."):
+            try:
+                transcribed_text = transcribe_audio(audio_record["bytes"], selected_lang_code, api_key)
+                if transcribed_text.strip():
+                    user_input = transcribed_text.strip()
+                    st.sidebar.info(f"🎙️ **Transcribed ({selected_lang_name}):** \"{user_input}\"")
+            except Exception as e:
+                st.sidebar.error(f"Voice transcription error: {e}")
+
+    if user_input or uploaded_image or (gen_checklist and st.session_state.messages and st.session_state.messages[-1]["role"] == "user"):
+        if gen_checklist and not user_input:
+            current_prompt = st.session_state.messages[-1]["content"]
+        else:
+            current_prompt = user_input if user_input else f"Analyze the attached image for mechanical defects. Provide findings in {selected_lang_name}."
+            st.session_state.messages.append({"role": "user", "content": current_prompt})
+            with st.chat_message("user"):
+                st.markdown(current_prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner(f"Analyzing request in {selected_lang_name} via Hybrid RAG..."):
+                combined_response = ""
+                retrieved_docs = []
+                rag_query = f"[{st.session_state.active_qr_tag}] {current_prompt}" if st.session_state.active_qr_tag else current_prompt
+
                 if uploaded_image:
-                    st.markdown("### 📄 Related Documentation Guidance")
-                st.markdown(rag_response)
-                combined_response += f"### Manual Documentation Guidance\n{rag_response}"
+                    st.markdown("### 📸 Visual Defect Inspection")
+                    vision_analysis = analyze_image_with_groq(
+                        uploaded_image.getvalue(), 
+                        current_prompt, 
+                        selected_lang_name, 
+                        api_key, 
+                        st.session_state.active_qr_tag
+                    )
+                    st.markdown(vision_analysis)
+                    combined_response += f"### Visual Inspection Findings\n{vision_analysis}\n\n"
 
-                if retrieved_docs:
-                    with st.expander("📚 View Reference Sources & Citations"):
-                        for idx, doc in enumerate(retrieved_docs, 1):
-                            page = doc.metadata.get("page", None)
-                            page_str = f" (Page {page + 1})" if page is not None else ""
-                            st.markdown(f"**Source {idx}{page_str}:**")
-                            st.caption(doc.page_content)
-            elif not uploaded_image:
-                response_msg = "No active documentation found. Please upload a PDF/TXT manual or an image for inspection."
-                st.markdown(response_msg)
-                combined_response = response_msg
+                if ensemble_retriever and llm and prompt:
+                    retrieved_docs = ensemble_retriever.invoke(rag_query)
+                    context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
 
-            # Generate Speech Output with custom speed adjustment
-            audio_fp = generate_speech(combined_response, selected_lang_code, speed_factor=playback_speed)
-            st.audio(audio_fp, format="audio/mp3")
+                    chat_history = []
+                    for msg in st.session_state.messages[:-1]:
+                        if msg["role"] == "user":
+                            chat_history.append(HumanMessage(content=msg["content"]))
+                        elif msg["role"] == "assistant":
+                            chat_history.append(AIMessage(content=msg["content"]))
 
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": combined_response,
-                "sources": retrieved_docs,
-                "audio": audio_fp
-            })
-            st.rerun()
+                    chain = prompt | llm | StrOutputParser()
+                    rag_response = chain.invoke({
+                        "context": context_text,
+                        "chat_history": chat_history,
+                        "question": rag_query
+                    })
+                    
+                    if uploaded_image:
+                        st.markdown("### 📄 Related Documentation Guidance")
+                    st.markdown(rag_response)
+                    combined_response += f"### Manual Documentation Guidance\n{rag_response}"
+
+                    if retrieved_docs:
+                        with st.expander("📚 View Reference Sources & Citations"):
+                            for idx, doc in enumerate(retrieved_docs, 1):
+                                page = doc.metadata.get("page", None)
+                                page_str = f" (Page {page + 1})" if page is not None else ""
+                                st.markdown(f"**Source {idx}{page_str}:**")
+                                st.caption(doc.page_content)
+                elif not uploaded_image:
+                    response_msg = "No active documentation found. Please upload a PDF/TXT manual or an image for inspection."
+                    st.markdown(response_msg)
+                    combined_response = response_msg
+
+                audio_fp = generate_speech(combined_response, selected_lang_code, speed_factor=playback_speed)
+                st.audio(audio_fp, format="audio/mp3")
+
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": combined_response,
+                    "sources": retrieved_docs,
+                    "audio": audio_fp
+                })
+                st.rerun()
+
+# ================= TAB 2: TELEMETRY & ANOMALIES =================
+with tab2:
+    st.subheader("📈 Real-Time IoT Telemetry & Anomaly Analysis")
+    
+    col_plot, col_table = st.columns()
+    
+    with col_plot:
+        st.markdown("#### Anomaly Visualization")
+        if os.path.exists("anomaly_plot.png"):
+            st.image("anomaly_plot.png", caption="Sensor Anomaly Detection Model Output", use_container_width=True)
+        else:
+            st.info("No `anomaly_plot.png` found in workspace.")
+
+    with col_table:
+        st.markdown("#### Flagged Telemetry Log")
+        if os.path.exists("flagged_telemetry.csv"):
+            df_flagged = pd.read_csv("flagged_telemetry.csv")
+            st.dataframe(df_flagged, use_container_width=True)
+            
+            selected_anomaly_row = st.selectbox("Select flagged event to diagnose:", df_flagged.index, format_func=lambda i: f"Row {i}: {df_flagged.iloc[i].to_dict()}")
+            
+            if st.button("⚡ Diagnose Selected Spike with RAG"):
+                spike_details = df_flagged.iloc[selected_anomaly_row].to_dict()
+                diagnostic_query = f"Analyze IoT telemetry spike anomaly: {spike_details}. What maintenance or troubleshooting steps are recommended?"
+                st.session_state.messages.append({"role": "user", "content": diagnostic_query})
+                st.success("Flagged spike injected into Field Assistant context! Switch to 💬 Field Assistant tab to review.")
+        else:
+            st.info("No `flagged_telemetry.csv` found.")
+
+# ================= TAB 3: WORK LOGS & EXPORT =================
+with tab3:
+    st.subheader("📋 Audit Trails, Work Logs, & Feedback Export")
+    
+    col_exp1, col_exp2 = st.columns(2)
+    
+    with col_exp1:
+        st.markdown("#### PDF Work Log Generator")
+        if st.session_state.messages:
+            pdf_data = generate_pdf_report(st.session_state.messages, st.session_state.active_qr_tag)
+            st.download_button(
+                label="📥 Download Session PDF Work Log",
+                data=pdf_data,
+                file_name=f"maintenance_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                mime="application/pdf"
+            )
+        else:
+            st.caption("Complete a chat interaction to unlock the PDF report generator.")
+
+    with col_exp2:
+        st.markdown("#### Manager Feedback Log Export")
+        if os.path.exists(FEEDBACK_FILE):
+            with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
+                csv_data = f.read()
+            st.download_button(
+                label="📊 Download Feedback Log (CSV)",
+                data=csv_data,
+                file_name=f"technician_feedback_log_{datetime.datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+            df_feedback = pd.read_csv(FEEDBACK_FILE)
+            st.markdown("**Recent Feedback Records:**")
+            st.dataframe(df_feedback.tail(5), use_container_width=True)
+        else:
+            st.caption("No technician feedback recorded yet.")
