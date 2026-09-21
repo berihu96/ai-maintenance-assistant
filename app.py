@@ -2,6 +2,7 @@
 import tempfile
 import io
 import base64
+import html
 import datetime
 from PIL import Image
 import streamlit as st
@@ -41,7 +42,7 @@ if not api_key:
     st.error("`GROQ_API_KEY` not found! Please configure it in Streamlit Cloud Secrets or set it as an environment variable.")
     st.stop()
 
-# 3. Helper Function: PDF Report Generator
+# 3. Helper Function: PDF Report Generator (Crash-Proof Sanitization)
 def generate_pdf_report(messages):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -95,17 +96,20 @@ def generate_pdf_report(messages):
         role_label = "<b>Technician Inquiry:</b>" if msg["role"] == "user" else "<b>Assistant Finding:</b>"
         style = user_style if msg["role"] == "user" else assistant_style
         
-        # Format markdown markers for PDF flowable text
-        clean_content = msg["content"].replace("###", "<b>").replace("**", "<b>").replace("\n", "<br/>")
+        # 1. Escape XML reserved characters (&, <, >) to avoid ReportLab parser crashes
+        text = html.escape(msg["content"])
         
-        story.append(Paragraph(f"{role_label}<br/>{clean_content}", style))
+        # 2. Safely convert line breaks for ReportLab flowables
+        text = text.replace("\n", "<br/>")
+        
+        story.append(Paragraph(f"{role_label}<br/>{text}", style))
         story.append(Spacer(1, 8))
 
     doc.build(story)
     buffer.seek(0)
     return buffer
 
-# 4. Sidebar Controls (Documents, Vision, Voice, and Report Export)
+# 4. Sidebar Controls
 st.sidebar.header("📄 Upload Documentation")
 uploaded_file = st.sidebar.file_uploader("Upload manual (PDF or TXT)", type=["pdf", "txt"])
 
