@@ -1,0 +1,11 @@
+SECTION 1: GENERAL PUMP MAINTENANCE
+Routine checks should be conducted every 500 operating hours. Inspect seals, housing, and alignment.
+
+SECTION 2: VIBRATION & BEARING ANOMALIES
+Fault Code E-202: High Radial Vibration (> 2.0 mm/s)
+- Cause: Bearing race degradation, shaft misalignment, or unbalance in driven equipment.
+- Immediate Action: Trigger scheduled shutdown within 2 hours if vibration exceeds 2.5 mm/s.
+- Maintenance Procedure:
+  1. Inspect drive shaft alignment using laser alignment tool. Tolerance must be within 0.05 mm.
+  2. Perform bearing lubrication check. Replenish with Mobilith SHC 100 synthetic grease (15 grams).
+  3. Inspect drive belt tension; adjust to 45-50 N.
