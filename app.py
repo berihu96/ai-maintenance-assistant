@@ -9,7 +9,7 @@ import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.retrievers import BM25Retriever, EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -18,6 +18,15 @@ from langchain_core.messages import HumanMessage, AIMessage
 from streamlit_mic_recorder import mic_recorder
 from gtts import gTTS
 from groq import Groq
+
+# Safe EnsembleRetriever Import Fallback
+try:
+    from langchain.retrievers import EnsembleRetriever
+except ImportError:
+    try:
+        from langchain.retrievers.ensemble import EnsembleRetriever
+    except ImportError:
+        from langchain_community.retrievers import EnsembleRetriever
 
 # ReportLab for PDF Work Log Export
 from reportlab.lib.pagesizes import letter
