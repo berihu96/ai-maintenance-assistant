@@ -21,6 +21,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from streamlit_mic_recorder import mic_recorder
 from gtts import gTTS
 from groq import Groq
+from pydub import AudioSegment
 
 # ReportLab for PDF Work Log Export
 from reportlab.lib.pagesizes import letter
@@ -54,7 +55,7 @@ st.set_page_config(
 )
 
 st.title("🔧 AI Maintenance Assistant")
-st.caption("Multimodal Field Tool: QR Equipment Lock, Hybrid RAG, Citation Tracking, Maintenance Scheduler, Multi-Language Voice, Vision Analysis, PDF Work Logs, and Technician Feedback.")
+st.caption("Multimodal Field Tool: QR Equipment Lock, Hybrid RAG, Citation Tracking, Maintenance Scheduler, Multi-Language Voice, Speed Control, Vision Analysis, PDF Work Logs, and Feedback Loops.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -64,7 +65,7 @@ if not api_key:
     st.stop()
 
 
-# 3. Helper Function: CSV Feedback Logger & Reader
+# 3. Helper Function: CSV Feedback Logger
 FEEDBACK_FILE = "feedback_log.csv"
 
 def log_feedback_to_csv(timestamp, user_prompt, assistant_response, rating, equipment_tag, citations):
@@ -162,7 +163,7 @@ def scan_qr_code(image_bytes):
 
 
 # 6. Sidebar Controls
-st.sidebar.header("🌐 Language Settings")
+st.sidebar.header("🌐 Language & Voice Settings")
 LANGUAGE_MAP = {
     "English 🇺🇸": {"code": "en", "name": "English"},
     "Amharic 🇪🇹": {"code": "am", "name": "Amharic"},
@@ -173,6 +174,14 @@ LANGUAGE_MAP = {
 selected_lang_label = st.sidebar.selectbox("Preferred Language / ቋንቋ", list(LANGUAGE_MAP.keys()), index=0)
 selected_lang_code = LANGUAGE_MAP[selected_lang_label]["code"]
 selected_lang_name = LANGUAGE_MAP[selected_lang_label]["name"]
+
+# Option 2: Audio Playback Speed Selector
+playback_speed = st.sidebar.radio(
+    "🎙️ Voice Playback Speed",
+    options=[0.75, 1.0, 1.25, 1.5],
+    index=1,
+    format_func=lambda x: f"{x}x (Slower)" if x < 1.0 else f"{x}x (Standard)" if x == 1.0 else f"{x}x (Faster)"
+)
 
 st.sidebar.divider()
 st.sidebar.header("🏷️ Equipment QR Scanner")
@@ -295,14 +304,33 @@ def transcribe_audio(audio_bytes, lang_code, key):
     return transcription
 
 
-# 9. Helper Function: Text-to-Speech
-def generate_speech(text, lang_code):
+# 9. Helper Function: Text-to-Speech with Speed Control
+def generate_speech(text, lang_code, speed_factor=1.0):
     clean_text = text.replace("#", "").replace("*", "").replace("-", "")
     tts = gTTS(text=clean_text, lang=lang_code)
-    audio_fp = io.BytesIO()
-    tts.write_to_fp(audio_fp)
-    audio_fp.seek(0)
-    return audio_fp
+    
+    raw_audio_fp = io.BytesIO()
+    tts.write_to_fp(raw_audio_fp)
+    raw_audio_fp.seek(0)
+
+    # Adjust playback speed if non-default using pydub
+    if speed_factor != 1.0:
+        try:
+            sound = AudioSegment.from_file(raw_audio_fp, format="mp3")
+            # Speedup/slowdown audio by adjusting frame rate
+            altered_sound = sound._spawn(sound.raw_data, overrides={
+                "frame_rate": int(sound.frame_rate * speed_factor)
+            }).set_frame_rate(sound.frame_rate)
+            
+            output_audio_fp = io.BytesIO()
+            altered_sound.export(output_audio_fp, format="mp3")
+            output_audio_fp.seek(0)
+            return output_audio_fp
+        except Exception:
+            raw_audio_fp.seek(0)
+            return raw_audio_fp
+            
+    return raw_audio_fp
 
 
 # 10. Persistent Indexing & Hybrid Search Creation
@@ -587,8 +615,8 @@ if user_input or uploaded_image or (gen_checklist and st.session_state.messages 
                 st.markdown(response_msg)
                 combined_response = response_msg
 
-            # Generate Speech Output in selected language
-            audio_fp = generate_speech(combined_response, selected_lang_code)
+            # Generate Speech Output with custom speed adjustment
+            audio_fp = generate_speech(combined_response, selected_lang_code, speed_factor=playback_speed)
             st.audio(audio_fp, format="audio/mp3")
 
             st.session_state.messages.append({
