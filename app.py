@@ -1,6 +1,8 @@
 ﻿import os
 import tempfile
 import io
+import base64
+from PIL import Image
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -23,7 +25,7 @@ st.set_page_config(
 )
 
 st.title("🔧 RAG Maintenance Assistant")
-st.caption("Upload technical manuals (PDF/TXT) or use voice commands for hands-free troubleshooting.")
+st.caption("Multimodal AI Maintenance Assistant: PDF/TXT Manual RAG, Voice Control, Chat Memory, and Visual Defect Analysis.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -32,9 +34,16 @@ if not api_key:
     st.error("`GROQ_API_KEY` not found! Please configure it in Streamlit Cloud Secrets or set it as an environment variable.")
     st.stop()
 
-# 3. Sidebar File Uploader & Voice Control
+# 3. Sidebar Controls (Document, Audio, and Image Uploads)
 st.sidebar.header("📄 Upload Documentation")
-uploaded_file = st.sidebar.file_uploader("Upload a manual (PDF or TXT)", type=["pdf", "txt"])
+uploaded_file = st.sidebar.file_uploader("Upload manual (PDF or TXT)", type=["pdf", "txt"])
+
+st.sidebar.divider()
+st.sidebar.header("📸 Visual Defect Inspection")
+uploaded_image = st.sidebar.file_uploader("Upload component photo", type=["png", "jpg", "jpeg"])
+
+if uploaded_image:
+    st.sidebar.image(uploaded_image, caption="Component Preview", use_container_width=True)
 
 st.sidebar.divider()
 st.sidebar.header("🎙️ Hands-Free Voice Control")
@@ -44,7 +53,34 @@ audio_record = mic_recorder(
     key="voice_input"
 )
 
-# 4. Helper Function: Transcribe Audio via Groq Whisper API
+# 4. Helper Function: Multimodal Vision Analysis
+def analyze_image_with_groq(image_bytes, user_prompt, key):
+    client = Groq(api_key=key)
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+    
+    prompt = user_prompt if user_prompt else "Inspect this equipment photo. Describe any visible defects, rust, wear, cracks, or electrical anomalies, and list recommended maintenance steps."
+    
+    chat_completion = client.chat.completions.create(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
+                        },
+                    },
+                ],
+            }
+        ],
+        model="llama-3.2-11b-vision-instruct",
+        temperature=0.2,
+    )
+    return chat_completion.choices[0].message.content
+
+# 5. Helper Function: Speech to Text (Groq Whisper)
 def transcribe_audio(audio_bytes, key):
     client = Groq(api_key=key)
     audio_file = ("audio.wav", audio_bytes, "audio/wav")
@@ -55,9 +91,8 @@ def transcribe_audio(audio_bytes, key):
     )
     return transcription
 
-# 5. Helper Function: Text to Speech (TTS)
+# 6. Helper Function: Text to Speech (gTTS)
 def generate_speech(text):
-    # Clean text of markdown characters for smoother voice delivery
     clean_text = text.replace("#", "").replace("*", "").replace("-", "")
     tts = gTTS(text=clean_text, lang="en")
     audio_fp = io.BytesIO()
@@ -65,7 +100,7 @@ def generate_speech(text):
     audio_fp.seek(0)
     return audio_fp
 
-# 6. Helper Function to Build Vector Store
+# 7. Helper Function: Index Documents for RAG
 @st.cache_resource(show_spinner="Processing and indexing manual...")
 def process_file(file_bytes, file_name):
     documents = []
@@ -96,7 +131,7 @@ def process_file(file_bytes, file_name):
     vectorstore = FAISS.from_documents(splits, embeddings)
     return vectorstore
 
-# 7. Determine Vector Store Source
+# 8. Vector Store Initialization
 vectorstore = None
 
 if uploaded_file is not None:
@@ -107,9 +142,9 @@ elif os.path.exists("manual.txt"):
         vectorstore = process_file(f.read(), "manual.txt")
     st.sidebar.info("Using default `manual.txt`.")
 else:
-    st.sidebar.warning("Please upload a PDF or TXT manual to begin.")
+    st.sidebar.warning("Upload a manual or rely on visual analysis.")
 
-# 8. RAG Chain Initialization with Memory
+# 9. RAG Chain Setup
 rag_chain = None
 if vectorstore:
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
@@ -149,44 +184,50 @@ Context:
         | StrOutputParser()
     )
 
-# 9. Session State Initialization
+# 10. Session State & Chat Display
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display prior chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if "audio" in message:
             st.audio(message["audio"], format="audio/mp3")
 
-# Handle input from either text chat input or sidebar audio recorder
-user_input = st.chat_input("Ask a maintenance or troubleshooting question...")
+# Handle input sources
+user_input = st.chat_input("Ask a question or upload a photo to analyze...")
 
 if audio_record and "bytes" in audio_record:
-    with st.spinner("Transcribing audio input..."):
+    with st.spinner("Transcribing voice command..."):
         try:
             transcribed_text = transcribe_audio(audio_record["bytes"], api_key)
             if transcribed_text.strip():
                 user_input = transcribed_text.strip()
                 st.sidebar.info(f"🎙️ **Recorded:** \"{user_input}\"")
         except Exception as e:
-            st.sidebar.error(f"Error transcribing audio: {e}")
+            st.sidebar.error(f"Transcription error: {e}")
 
-# Process query if present
-if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
+# 11. Process Execution
+if user_input or uploaded_image:
+    current_prompt = user_input if user_input else "Analyze the attached image for mechanical defects."
+    
+    st.session_state.messages.append({"role": "user", "content": current_prompt})
     with st.chat_message("user"):
-        st.markdown(user_input)
+        st.markdown(current_prompt)
 
-    if not rag_chain:
-        with st.chat_message("assistant"):
-            response = "No active documentation found. Please upload a PDF or TXT manual using the sidebar."
-            st.markdown(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
-    else:
-        with st.chat_message("assistant"):
-            with st.spinner("Searching document and generating response..."):
+    with st.chat_message("assistant"):
+        with st.spinner("Analyzing request..."):
+            combined_response = ""
+
+            # Vision analysis execution
+            if uploaded_image:
+                st.markdown("### 📸 Visual Defect Inspection")
+                vision_analysis = analyze_image_with_groq(uploaded_image.getvalue(), current_prompt, api_key)
+                st.markdown(vision_analysis)
+                combined_response += f"### Visual Inspection\n{vision_analysis}\n\n"
+
+            # Manual RAG search execution
+            if rag_chain:
                 chat_history = []
                 for msg in st.session_state.messages[:-1]:
                     if msg["role"] == "user":
@@ -194,20 +235,26 @@ if user_input:
                     elif msg["role"] == "assistant":
                         chat_history.append(AIMessage(content=msg["content"]))
 
-                response = rag_chain.invoke({
-                    "question": user_input,
+                rag_response = rag_chain.invoke({
+                    "question": current_prompt,
                     "chat_history": chat_history
                 })
+                
+                if uploaded_image:
+                    st.markdown("### 📄 Related Documentation Findings")
+                st.markdown(rag_response)
+                combined_response += f"### Documentation Guidance\n{rag_response}"
+            elif not uploaded_image:
+                response_msg = "No active documentation found. Please upload a PDF/TXT manual or an image for inspection."
+                st.markdown(response_msg)
+                combined_response = response_msg
 
-                # Generate speech audio for assistant response
-                audio_fp = generate_speech(response)
+            # Audio Speech Output Generation
+            audio_fp = generate_speech(combined_response)
+            st.audio(audio_fp, format="audio/mp3")
 
-                st.markdown(response)
-                st.audio(audio_fp, format="audio/mp3")
-
-                # Store content and audio in session history
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": response,
-                    "audio": audio_fp
-                })
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": combined_response,
+                "audio": audio_fp
+            })
