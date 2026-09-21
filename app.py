@@ -64,7 +64,7 @@ if not api_key:
     st.stop()
 
 
-# 3. Helper Function: CSV Feedback Logger
+# 3. Helper Function: CSV Feedback Logger & Reader
 FEEDBACK_FILE = "feedback_log.csv"
 
 def log_feedback_to_csv(timestamp, user_prompt, assistant_response, rating, equipment_tag, citations):
@@ -235,6 +235,19 @@ audio_record = mic_recorder(
 
 st.sidebar.divider()
 st.sidebar.header("📋 Export Maintenance Summary")
+
+# Manager Feedback Export Control
+if os.path.exists(FEEDBACK_FILE):
+    with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
+        csv_data = f.read()
+    st.sidebar.download_button(
+        label="📊 Download Feedback Log (CSV)",
+        data=csv_data,
+        file_name=f"technician_feedback_log_{datetime.datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv"
+    )
+else:
+    st.sidebar.caption("No technician feedback recorded yet.")
 
 
 # 7. Helper Function: Multimodal Vision Analysis
