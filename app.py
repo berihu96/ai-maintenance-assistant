@@ -1,95 +1,89 @@
 ﻿import os
-import shutil
-import warnings
 import streamlit as st
-
-# Suppress warnings
-warnings.filterwarnings("ignore")
-
-from langchain_community.document_loaders import DirectoryLoader, TextLoader, PyPDFLoader
+from langchain_community.document_loaders import TextLoader, PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
-GROQ_KEY = "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"
-INDEX_PATH = "faiss_index"
-DOCS_DIR = "."
-
-st.set_page_config(page_title="AI Maintenance Assistant", page_icon="🛠️", layout="wide")
-
-st.title("🛠️ AI Maintenance Assistant")
-st.caption("Ask questions strictly grounded in technical manual documentation.")
-
-@st.cache_resource
-def get_embeddings():
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True}
-    )
-
-embedding_function = get_embeddings()
-
-def load_or_build_index():
-    if os.path.exists(INDEX_PATH):
-        return FAISS.load_local(INDEX_PATH, embedding_function, allow_dangerous_deserialization=True)
-    else:
-        documents = []
-        txt_loader = DirectoryLoader(DOCS_DIR, glob="*.txt", loader_cls=TextLoader)
-        documents.extend(txt_loader.load())
-        pdf_loader = DirectoryLoader(DOCS_DIR, glob="*.pdf", loader_cls=PyPDFLoader)
-        documents.extend(pdf_loader.load())
-
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        docs = text_splitter.split_documents(documents)
-        db = FAISS.from_documents(docs, embedding_function)
-        db.save_local(INDEX_PATH)
-        return db
-
-db = load_or_build_index()
-
-llm = ChatGroq(model_name="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_KEY)
-
-prompt_template = ChatPromptTemplate.from_template(
-    """You are an AI Maintenance Assistant. Answer the technician's query strictly based on the provided technical manual context.
-
-Context:
-{context}
-
-Question:
-{question}
-
-Answer:"""
+# 1. Page Configuration
+st.set_page_config(
+    page_title="RAG Maintenance Assistant",
+    page_icon="🔧",
+    layout="wide"
 )
 
-chain = prompt_template | llm
+st.title("🔧 RAG Maintenance Assistant")
+st.caption("Upload technical manuals to query troubleshooting procedures and safety guidelines.")
 
-# --- SIDEBAR WITH FILE UPLOADER & RE-INDEX BUTTON ---
-with st.sidebar:
-    st.header("📄 Upload New Manuals")
-    uploaded_files = st.file_uploader("Upload PDF or TXT files", type=["pdf", "txt"], accept_multiple_files=True)
+# 2. Secure API Key Access
+api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+
+if not api_key:
+    st.error("`GROQ_API_KEY` not found! Please configure it in Streamlit Cloud Secrets or set it as an environment variable.")
+    st.stop()
+
+# 3. Cache Vector Store Creation
+@st.cache_resource(show_spinner="Indexing documentation...")
+def get_vectorstore():
+    documents = []
     
-    if uploaded_files:
-        for file in uploaded_files:
-            file_path = os.path.join(DOCS_DIR, file.name)
-            with open(file_path, "wb") as f:
-                f.write(file.getbuffer())
-        st.success(f"Saved {len(uploaded_files)} file(s)!")
-        st.info("Click 'Force Re-index Documents' below to index the new files.")
+    # Load local manual.txt if present
+    if os.path.exists("manual.txt"):
+        loader = TextLoader("manual.txt")
+        documents.extend(loader.load())
+        
+    if not documents:
+        return None
 
-    st.divider()
-    st.header("⚙️ Controls & Status")
-    st.success("Vector DB Index Active")
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = text_splitter.split_documents(documents)
+
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vectorstore = FAISS.from_documents(splits, embeddings)
+    return vectorstore
+
+vectorstore = get_vectorstore()
+
+# 4. RAG Chain Initialization
+if vectorstore:
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
+    llm = ChatGroq(
+        groq_api_key=api_key,
+        model_name="openai/gpt-oss-120b",
+        temperature=0.1
+    )
+
+    prompt_template = """
+    You are a technical maintenance assistant. Answer the user's question based strictly on the provided context.
+    If you do not know the answer based on the context, state that the information is not available in the manual.
+
+    Context:
+    {context}
+
+    Question:
+    {question}
+
+    Answer:
+    """
     
-    if st.button("🔄 Force Re-index Documents"):
-        if os.path.exists(INDEX_PATH):
-            shutil.rmtree(INDEX_PATH)
-        st.cache_resource.clear()
-        st.rerun()
+    prompt = ChatPromptTemplate.from_template(prompt_template)
 
-# --- CHAT HISTORY ---
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+
+    rag_chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+
+# 5. Session State & Chat UI
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -97,28 +91,19 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# --- USER INPUT ---
-if user_query := st.chat_input("Ex: What grease should be used for bearing lubrication?"):
-    st.session_state.messages.append({"role": "user", "content": user_query})
+if user_input := st.chat_input("Ask a maintenance or troubleshooting question..."):
+    st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
-        st.markdown(user_query)
+        st.markdown(user_input)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Searching manuals..."):
-            matching_docs = db.similarity_search(user_query, k=3)
-            context = "\n\n".join([doc.page_content for doc in matching_docs])
-
-            sources = set()
-            for doc in matching_docs:
-                source_name = os.path.basename(doc.metadata.get("source", "manual.txt"))
-                page_num = doc.metadata.get("page", None)
-                if page_num is not None:
-                    sources.add(f"{source_name} (Page {page_num + 1})")
-                else:
-                    sources.add(source_name)
-
-            response = chain.invoke({"context": context, "question": user_query})
-            
-            formatted_response = f"{response.content}\n\n**📍 Sources Referenced:** `{', '.join(sources)}`"
-            st.markdown(formatted_response)
-            st.session_state.messages.append({"role": "assistant", "content": formatted_response})
+    if not vectorstore:
+        with st.chat_message("assistant"):
+            response = "No technical manuals found to query. Please ensure `manual.txt` exists in your repository."
+            st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+    else:
+        with st.chat_message("assistant"):
+            with st.spinner("Searching manual and generating response..."):
+                response = rag_chain.invoke(user_input)
+                st.markdown(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
