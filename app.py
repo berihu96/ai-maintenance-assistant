@@ -51,7 +51,7 @@ st.set_page_config(
 )
 
 st.title("🔧 AI Maintenance Assistant")
-st.caption("Multimodal Field Tool: Hybrid RAG, Citation Tracking, Maintenance Scheduler, Voice Control, Vision Analysis, and PDF Work Logs.")
+st.caption("Multimodal Field Tool: Hybrid RAG, Citation Tracking, Maintenance Scheduler, Multi-Language Voice Control, Vision Analysis, and PDF Work Logs.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -127,6 +127,19 @@ def generate_pdf_report(messages):
 
 
 # 4. Sidebar Controls
+st.sidebar.header("🌐 Language Settings")
+LANGUAGE_MAP = {
+    "English 🇺🇸": {"code": "en", "name": "English"},
+    "Amharic 🇪🇹": {"code": "am", "name": "Amharic"},
+    "Spanish 🇪🇸": {"code": "es", "name": "Spanish"},
+    "French 🇫🇷": {"code": "fr", "name": "French"}
+}
+
+selected_lang_label = st.sidebar.selectbox("Preferred Language / ቋንቋ", list(LANGUAGE_MAP.keys()), index=0)
+selected_lang_code = LANGUAGE_MAP[selected_lang_label]["code"]
+selected_lang_name = LANGUAGE_MAP[selected_lang_label]["name"]
+
+st.sidebar.divider()
 st.sidebar.header("📄 Upload Documentation")
 uploaded_file = st.sidebar.file_uploader("Upload manual (PDF or TXT)", type=["pdf", "txt"])
 
@@ -165,12 +178,14 @@ st.sidebar.header("📋 Export Maintenance Summary")
 
 
 # 5. Helper Function: Multimodal Vision Analysis
-def analyze_image_with_groq(image_bytes, user_prompt, key):
+def analyze_image_with_groq(image_bytes, user_prompt, lang_name, key):
     client = Groq(api_key=key)
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
     
-    prompt = user_prompt if user_prompt else "Inspect this equipment photo. Describe visible defects, rust, wear, cracks, or electrical issues, and list action items."
-    
+    prompt = user_prompt if user_prompt else f"Inspect this equipment photo. Describe visible defects, rust, wear, cracks, or electrical issues, and list action items. Respond completely in {lang_name}."
+    if lang_name != "English" and user_prompt:
+        prompt += f" Respond in {lang_name}."
+
     chat_completion = client.chat.completions.create(
         messages=[
             {
@@ -192,22 +207,23 @@ def analyze_image_with_groq(image_bytes, user_prompt, key):
     return chat_completion.choices[0].message.content
 
 
-# 6. Helper Function: Speech-to-Text
-def transcribe_audio(audio_bytes, key):
+# 6. Helper Function: Speech-to-Text (Dynamic Language)
+def transcribe_audio(audio_bytes, lang_code, key):
     client = Groq(api_key=key)
     audio_file = ("audio.wav", audio_bytes, "audio/wav")
     transcription = client.audio.transcriptions.create(
         file=audio_file,
         model="whisper-large-v3",
+        language=lang_code,
         response_format="text"
     )
     return transcription
 
 
-# 7. Helper Function: Text-to-Speech
-def generate_speech(text):
+# 7. Helper Function: Text-to-Speech (Dynamic Language)
+def generate_speech(text, lang_code):
     clean_text = text.replace("#", "").replace("*", "").replace("-", "")
-    tts = gTTS(text=clean_text, lang="en")
+    tts = gTTS(text=clean_text, lang=lang_code)
     audio_fp = io.BytesIO()
     tts.write_to_fp(audio_fp)
     audio_fp.seek(0)
@@ -288,8 +304,10 @@ llm = ChatGroq(
 ) if ensemble_retriever else None
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a technical maintenance assistant. Answer the user's question based strictly on the provided context and conversation history.
+    ("system", f"""You are a technical maintenance assistant. Answer the user's question based strictly on the provided context and conversation history.
 If you do not know the answer based on the context, state that the information is not available in the manual.
+
+IMPORTANT: You MUST write your entire response in {selected_lang_name}.
 
 Format your response using:
 - Markdown headers (###) for main sections or symptoms
@@ -297,7 +315,7 @@ Format your response using:
 - Bold text (**text**) for part numbers, warnings, or key terms
 
 Context:
-{context}"""),
+{{context}}"""),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{question}")
 ]) if ensemble_retriever else None
@@ -342,7 +360,7 @@ if "messages" not in st.session_state:
 
 # Action triggered by "Generate Preventive Checklist" button
 if gen_checklist:
-    checklist_prompt = f"Generate a comprehensive preventive maintenance checklist for an equipment currently at {op_hours} operating hours, with last service recorded on {last_service}. Highlight key inspection tasks for overdue or upcoming items."
+    checklist_prompt = f"Generate a comprehensive preventive maintenance checklist in {selected_lang_name} for equipment currently at {op_hours} operating hours, with last service recorded on {last_service}. Highlight key inspection tasks for overdue or upcoming items."
     st.session_state.messages.append({"role": "user", "content": checklist_prompt})
 
 if st.session_state.messages:
@@ -371,15 +389,15 @@ for message in st.session_state.messages:
             st.audio(message["audio"], format="audio/mp3")
 
 # 13. Input Processing
-user_input = st.chat_input("Ask a question or upload a photo to analyze...")
+user_input = st.chat_input(f"Ask a question ({selected_lang_name}) or upload a photo to analyze...")
 
 if audio_record and "bytes" in audio_record:
-    with st.spinner("Transcribing audio input via Groq Whisper..."):
+    with st.spinner(f"Transcribing audio in {selected_lang_name} via Groq Whisper..."):
         try:
-            transcribed_text = transcribe_audio(audio_record["bytes"], api_key)
+            transcribed_text = transcribe_audio(audio_record["bytes"], selected_lang_code, api_key)
             if transcribed_text.strip():
                 user_input = transcribed_text.strip()
-                st.sidebar.info(f"🎙️ **Transcribed:** \"{user_input}\"")
+                st.sidebar.info(f"🎙️ **Transcribed ({selected_lang_name}):** \"{user_input}\"")
         except Exception as e:
             st.sidebar.error(f"Voice transcription error: {e}")
 
@@ -388,20 +406,20 @@ if user_input or uploaded_image or (gen_checklist and st.session_state.messages 
     if gen_checklist and not user_input:
         current_prompt = st.session_state.messages[-1]["content"]
     else:
-        current_prompt = user_input if user_input else "Analyze the attached image for mechanical defects."
+        current_prompt = user_input if user_input else f"Analyze the attached image for mechanical defects. Provide findings in {selected_lang_name}."
         st.session_state.messages.append({"role": "user", "content": current_prompt})
         with st.chat_message("user"):
             st.markdown(current_prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing request via Hybrid RAG..."):
+        with st.spinner(f"Analyzing request in {selected_lang_name} via Hybrid RAG..."):
             combined_response = ""
             retrieved_docs = []
 
             # Visual Defect Analysis
             if uploaded_image:
                 st.markdown("### 📸 Visual Defect Inspection")
-                vision_analysis = analyze_image_with_groq(uploaded_image.getvalue(), current_prompt, api_key)
+                vision_analysis = analyze_image_with_groq(uploaded_image.getvalue(), current_prompt, selected_lang_name, api_key)
                 st.markdown(vision_analysis)
                 combined_response += f"### Visual Inspection Findings\n{vision_analysis}\n\n"
 
@@ -437,12 +455,12 @@ if user_input or uploaded_image or (gen_checklist and st.session_state.messages 
                             st.markdown(f"**Source {idx}{page_str}:**")
                             st.caption(doc.page_content)
             elif not uploaded_image:
-                response_msg = "No active documentation found. Please upload a PDF/TXT manual or an image for inspection."
+                response_msg = f"No active documentation found. Please upload a PDF/TXT manual or an image for inspection."
                 st.markdown(response_msg)
                 combined_response = response_msg
 
-            # Generate Speech Output
-            audio_fp = generate_speech(combined_response)
+            # Generate Speech Output in selected language
+            audio_fp = generate_speech(combined_response, selected_lang_code)
             st.audio(audio_fp, format="audio/mp3")
 
             st.session_state.messages.append({
