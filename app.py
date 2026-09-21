@@ -51,7 +51,7 @@ st.set_page_config(
 )
 
 st.title("🔧 AI Maintenance Assistant")
-st.caption("Multimodal Field Tool: Hybrid RAG, Citation Tracking, Persistent Vector Storage, Voice Control, Vision Analysis, and PDF Work Logs.")
+st.caption("Multimodal Field Tool: Hybrid RAG, Citation Tracking, Maintenance Scheduler, Voice Control, Vision Analysis, and PDF Work Logs.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -129,6 +129,21 @@ def generate_pdf_report(messages):
 # 4. Sidebar Controls
 st.sidebar.header("📄 Upload Documentation")
 uploaded_file = st.sidebar.file_uploader("Upload manual (PDF or TXT)", type=["pdf", "txt"])
+
+st.sidebar.divider()
+st.sidebar.header("⚙️ Equipment Scheduler")
+op_hours = st.sidebar.number_input("Current Operating Hours", min_value=0, value=450, step=10)
+last_service = st.sidebar.date_input("Last Service Date", value=datetime.date.today() - datetime.timedelta(days=90))
+
+# Pre-defined interval thresholds
+INTERVALS = {
+    "Oil & Filter Change": 500,
+    "Air Filter Inspection/Replacement": 1000,
+    "Hydraulic System Service": 2500,
+    "Major Engine Overhaul": 5000
+}
+
+gen_checklist = st.sidebar.button("📋 Generate Preventive Checklist")
 
 st.sidebar.divider()
 st.sidebar.header("📸 Visual Defect Inspection")
@@ -287,9 +302,48 @@ Context:
     ("human", "{question}")
 ]) if ensemble_retriever else None
 
-# 11. Session State & Chat UI Render
+# 11. Maintenance Scheduler Display Component
+st.subheader("⏱️ Preventive Maintenance Status")
+col1, col2, col3, col4 = st.columns(4)
+
+cols = [col1, col2, col3, col4]
+idx = 0
+
+overdue_items = []
+due_soon_items = []
+
+for task, target_hrs in INTERVALS.items():
+    next_due = ((op_hours // target_hrs) + 1) * target_hrs
+    hrs_remaining = next_due - op_hours
+
+    with cols[idx]:
+        if hrs_remaining <= 0:
+            st.metric(label=task, value=f"{next_due} hrs", delta=f"{hrs_remaining} hrs (OVERDUE)", delta_color="inverse")
+            overdue_items.append(task)
+        elif hrs_remaining <= 50:
+            st.metric(label=task, value=f"{next_due} hrs", delta=f"{hrs_remaining} hrs left", delta_color="off")
+            due_soon_items.append(task)
+        else:
+            st.metric(label=task, value=f"{next_due} hrs", delta=f"{hrs_remaining} hrs left")
+    idx += 1
+
+if overdue_items:
+    st.error(f"⚠️ **Attention Required:** Overdue maintenance detected for: {', '.join(overdue_items)}")
+elif due_soon_items:
+    st.warning(f"🔔 **Upcoming Maintenance:** Scheduled within 50 operating hours: {', '.join(due_soon_items)}")
+else:
+    st.success("✅ All scheduled maintenance intervals are within nominal limits.")
+
+st.divider()
+
+# 12. Session State & Chat UI Render
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+# Action triggered by "Generate Preventive Checklist" button
+if gen_checklist:
+    checklist_prompt = f"Generate a comprehensive preventive maintenance checklist for an equipment currently at {op_hours} operating hours, with last service recorded on {last_service}. Highlight key inspection tasks for overdue or upcoming items."
+    st.session_state.messages.append({"role": "user", "content": checklist_prompt})
 
 if st.session_state.messages:
     pdf_data = generate_pdf_report(st.session_state.messages)
@@ -316,7 +370,7 @@ for message in st.session_state.messages:
         if "audio" in message:
             st.audio(message["audio"], format="audio/mp3")
 
-# 12. Input Processing
+# 13. Input Processing
 user_input = st.chat_input("Ask a question or upload a photo to analyze...")
 
 if audio_record and "bytes" in audio_record:
@@ -329,12 +383,15 @@ if audio_record and "bytes" in audio_record:
         except Exception as e:
             st.sidebar.error(f"Voice transcription error: {e}")
 
-if user_input or uploaded_image:
-    current_prompt = user_input if user_input else "Analyze the attached image for mechanical defects."
-    
-    st.session_state.messages.append({"role": "user", "content": current_prompt})
-    with st.chat_message("user"):
-        st.markdown(current_prompt)
+# Process triggered message (from chat input or generate checklist button)
+if user_input or uploaded_image or (gen_checklist and st.session_state.messages and st.session_state.messages[-1]["role"] == "user"):
+    if gen_checklist and not user_input:
+        current_prompt = st.session_state.messages[-1]["content"]
+    else:
+        current_prompt = user_input if user_input else "Analyze the attached image for mechanical defects."
+        st.session_state.messages.append({"role": "user", "content": current_prompt})
+        with st.chat_message("user"):
+            st.markdown(current_prompt)
 
     with st.chat_message("assistant"):
         with st.spinner("Analyzing request via Hybrid RAG..."):
