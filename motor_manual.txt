@@ -1,0 +1,21 @@
+﻿=== INDUSTRIAL MOTOR MODEL-X10 TECHNICAL MANUAL ===
+
+SECTION 1: OVERHEATING & TEMPERATURE FAULTS
+Fault Code E-101: High Stator Temperature (> 80°C)
+- Cause: Insufficient airflow, cooling fan failure, or continuous overload operation.
+- Immediate Action: Reduce load by 30% immediately. Inspect primary cooling intake for blockages.
+- Maintenance Procedure: Clean air filters using compressed air (30 PSI max). Inspect cooling fan blades for cracks or mechanical obstruction.
+
+SECTION 2: VIBRATION & BEARING ANOMALIES
+Fault Code E-202: High Radial Vibration (> 2.0 mm/s)
+- Cause: Bearing race degradation, shaft misalignment, or unbalance in driven equipment.
+- Immediate Action: Trigger scheduled shutdown within 2 hours if vibration exceeds 2.5 mm/s.
+- Maintenance Procedure: 
+  1. Inspect drive shaft alignment using laser alignment tool. Tolerance must be within 0.05 mm.
+  2. Perform bearing lubrication check. Replenish with Mobilith SHC 100 synthetic grease (15 grams).
+  3. Inspect drive belt tension; adjust to 45-50 N.
+
+SECTION 3: RPM & SPEED FLUCTUATIONS
+Fault Code E-303: Speed Instability (+/- 50 RPM variation)
+- Cause: Variable Frequency Drive (VFD) tuning parameters drift or feedback encoder fault.
+- Maintenance Procedure: Recalibrate optical shaft encoder. Verify wiring continuity on VFD control terminal strip (Terminals 5 & 6).

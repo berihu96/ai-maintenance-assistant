@@ -175,8 +175,8 @@ selected_lang_label = st.sidebar.selectbox("Preferred Language / ቋንቋ", lis
 selected_lang_code = LANGUAGE_MAP[selected_lang_label]["code"]
 selected_lang_name = LANGUAGE_MAP[selected_lang_label]["name"]
 
-# Option 2: Audio Playback Speed Selector
-playback_speed = st.sidebar.radio(
+# Option 2: Compact Audio Playback Speed Selector (Dropdown style)
+playback_speed = st.sidebar.selectbox(
     "🎙️ Voice Playback Speed",
     options=[0.75, 1.0, 1.25, 1.5],
     index=1,
@@ -317,7 +317,6 @@ def generate_speech(text, lang_code, speed_factor=1.0):
     if speed_factor != 1.0:
         try:
             sound = AudioSegment.from_file(raw_audio_fp, format="mp3")
-            # Speedup/slowdown audio by adjusting frame rate
             altered_sound = sound._spawn(sound.raw_data, overrides={
                 "frame_rate": int(sound.frame_rate * speed_factor)
             }).set_frame_rate(sound.frame_rate)
@@ -342,7 +341,7 @@ def setup_hybrid_retriever(file_bytes=None, file_name=None):
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
     if file_bytes and file_name:
-        file_ext = os.path.splitext(file_name)[1].lower()
+        file_ext = os.path.splitext(file_name).lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
             tmp_file.write(file_bytes)
             tmp_path = tmp_file.name
@@ -506,7 +505,7 @@ for msg_idx, message in enumerate(st.session_state.messages):
             if rating_key not in st.session_state:
                 st.session_state[rating_key] = None
 
-            f_col1, f_col2, f_col3 = st.columns([1, 1, 10])
+            f_col1, f_col2, f_col3 = st.columns()
             with f_col1:
                 if st.button("👍", key=f"up_{msg_idx}"):
                     st.session_state[rating_key] = "thumbs_up"
