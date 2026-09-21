@@ -14,7 +14,6 @@ from langchain.retrievers import EnsembleRetriever
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage, AIMessage
 from streamlit_mic_recorder import mic_recorder
@@ -35,7 +34,7 @@ st.set_page_config(
 )
 
 st.title("🔧 AI Maintenance Assistant")
-st.caption("Multimodal Field Tool: Hybrid RAG, Persistent Vector Storage, Hands-Free Voice Control, Visual Anomaly Detection, and PDF Work Log Generator.")
+st.caption("Multimodal Field Tool: Hybrid RAG, Citation Tracking, Persistent Vector Storage, Voice Control, Vision Analysis, and PDF Work Logs.")
 
 # 2. Secure API Key Access
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -130,7 +129,7 @@ audio_record = mic_recorder(
 st.sidebar.divider()
 st.sidebar.header("📋 Export Maintenance Summary")
 
-# 5. Helper Function: Multimodal Vision Analysis (Groq Llama 3.2 Vision)
+# 5. Helper Function: Multimodal Vision Analysis
 def analyze_image_with_groq(image_bytes, user_prompt, key):
     client = Groq(api_key=key)
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -157,7 +156,7 @@ def analyze_image_with_groq(image_bytes, user_prompt, key):
     )
     return chat_completion.choices[0].message.content
 
-# 6. Helper Function: Speech-to-Text (Groq Whisper)
+# 6. Helper Function: Speech-to-Text
 def transcribe_audio(audio_bytes, key):
     client = Groq(api_key=key)
     audio_file = ("audio.wav", audio_bytes, "audio/wav")
@@ -168,7 +167,7 @@ def transcribe_audio(audio_bytes, key):
     )
     return transcription
 
-# 7. Helper Function: Text-to-Speech (gTTS)
+# 7. Helper Function: Text-to-Speech
 def generate_speech(text):
     clean_text = text.replace("#", "").replace("*", "").replace("-", "")
     tts = gTTS(text=clean_text, lang="en")
@@ -185,7 +184,6 @@ def setup_hybrid_retriever(file_bytes=None, file_name=None):
     documents = []
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-    # Custom uploaded file handling
     if file_bytes and file_name:
         file_ext = os.path.splitext(file_name)[1].lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
@@ -202,7 +200,6 @@ def setup_hybrid_retriever(file_bytes=None, file_name=None):
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-    # Default manual fallback
     elif os.path.exists("manual.txt"):
         loader = TextLoader("manual.txt")
         documents.extend(loader.load())
@@ -210,26 +207,21 @@ def setup_hybrid_retriever(file_bytes=None, file_name=None):
     if not documents and not os.path.exists(INDEX_DIR):
         return None, None
 
-    # Split documents into chunks
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(documents) if documents else []
 
-    # Persistence handling: Load existing index or create and save new one
     if os.path.exists(INDEX_DIR) and not file_bytes:
         vectorstore = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
     else:
         vectorstore = FAISS.from_documents(splits, embeddings)
         vectorstore.save_local(INDEX_DIR)
 
-    # Dense FAISS Retriever
     faiss_retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-    # Sparse BM25 Retriever
     if splits:
         bm25_retriever = BM25Retriever.from_documents(splits)
         bm25_retriever.k = 3
 
-        # Hybrid Ensemble Retriever (50% Dense, 50% Sparse BM25 Keyword)
         ensemble_retriever = EnsembleRetriever(
             retrievers=[bm25_retriever, faiss_retriever],
             weights=[0.5, 0.5]
@@ -239,30 +231,26 @@ def setup_hybrid_retriever(file_bytes=None, file_name=None):
     return faiss_retriever, "faiss_only"
 
 # 9. Hybrid Retriever Setup Initialization
-ensemble_retriever = None
-search_mode = None
+ensemble_retriever, search_mode = (
+    setup_hybrid_retriever(uploaded_file.getvalue(), uploaded_file.name)
+    if uploaded_file is not None
+    else setup_hybrid_retriever()
+)
 
-if uploaded_file is not None:
-    ensemble_retriever, search_mode = setup_hybrid_retriever(uploaded_file.getvalue(), uploaded_file.name)
-    st.sidebar.success(f"Indexed `{uploaded_file.name}` (Hybrid Search active)!")
-else:
-    ensemble_retriever, search_mode = setup_hybrid_retriever()
-    if ensemble_retriever:
-        st.sidebar.info("⚡ Persistent Hybrid Search (BM25 + FAISS) ready.")
-    else:
-        st.sidebar.warning("Upload a manual or rely on visual analysis.")
-
-# 10. RAG Chain Setup
-rag_chain = None
 if ensemble_retriever:
-    llm = ChatGroq(
-        groq_api_key=api_key,
-        model_name="openai/gpt-oss-120b",
-        temperature=0.1
-    )
+    st.sidebar.info("⚡ Persistent Hybrid Search (BM25 + FAISS) ready.")
+else:
+    st.sidebar.warning("Upload a manual or rely on visual analysis.")
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a technical maintenance assistant. Answer the user's question based strictly on the provided context and conversation history.
+# 10. RAG Model Setup
+llm = ChatGroq(
+    groq_api_key=api_key,
+    model_name="openai/gpt-oss-120b",
+    temperature=0.1
+) if ensemble_retriever else None
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", """You are a technical maintenance assistant. Answer the user's question based strictly on the provided context and conversation history.
 If you do not know the answer based on the context, state that the information is not available in the manual.
 
 Format your response using:
@@ -272,29 +260,14 @@ Format your response using:
 
 Context:
 {context}"""),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{question}")
-    ])
-
-    def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
-
-    rag_chain = (
-        {
-            "context": (lambda x: x["question"]) | ensemble_retriever | format_docs,
-            "chat_history": lambda x: x["chat_history"],
-            "question": lambda x: x["question"],
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{question}")
+]) if ensemble_retriever else None
 
 # 11. Session State & Chat UI Render
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Sidebar PDF Download Button
 if st.session_state.messages:
     pdf_data = generate_pdf_report(st.session_state.messages)
     st.sidebar.download_button(
@@ -310,6 +283,13 @@ else:
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        if "sources" in message and message["sources"]:
+            with st.expander("📚 View Reference Sources & Citations"):
+                for idx, doc in enumerate(message["sources"], 1):
+                    page = doc.metadata.get("page", None)
+                    page_str = f" (Page {page + 1})" if page is not None else ""
+                    st.markdown(f"**Source {idx}{page_str}:**")
+                    st.caption(doc.page_content)
         if "audio" in message:
             st.audio(message["audio"], format="audio/mp3")
 
@@ -336,6 +316,7 @@ if user_input or uploaded_image:
     with st.chat_message("assistant"):
         with st.spinner("Analyzing request via Hybrid RAG..."):
             combined_response = ""
+            retrieved_docs = []
 
             # Visual Defect Analysis
             if uploaded_image:
@@ -344,8 +325,11 @@ if user_input or uploaded_image:
                 st.markdown(vision_analysis)
                 combined_response += f"### Visual Inspection Findings\n{vision_analysis}\n\n"
 
-            # Manual Documentation Hybrid RAG Search
-            if rag_chain:
+            # Manual Documentation Hybrid RAG Search with Citations
+            if ensemble_retriever and llm and prompt:
+                retrieved_docs = ensemble_retriever.invoke(current_prompt)
+                context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+
                 chat_history = []
                 for msg in st.session_state.messages[:-1]:
                     if msg["role"] == "user":
@@ -353,15 +337,25 @@ if user_input or uploaded_image:
                     elif msg["role"] == "assistant":
                         chat_history.append(AIMessage(content=msg["content"]))
 
-                rag_response = rag_chain.invoke({
-                    "question": current_prompt,
-                    "chat_history": chat_history
+                chain = prompt | llm | StrOutputParser()
+                rag_response = chain.invoke({
+                    "context": context_text,
+                    "chat_history": chat_history,
+                    "question": current_prompt
                 })
                 
                 if uploaded_image:
                     st.markdown("### 📄 Related Documentation Guidance")
                 st.markdown(rag_response)
                 combined_response += f"### Manual Documentation Guidance\n{rag_response}"
+
+                if retrieved_docs:
+                    with st.expander("📚 View Reference Sources & Citations"):
+                        for idx, doc in enumerate(retrieved_docs, 1):
+                            page = doc.metadata.get("page", None)
+                            page_str = f" (Page {page + 1})" if page is not None else ""
+                            st.markdown(f"**Source {idx}{page_str}:**")
+                            st.caption(doc.page_content)
             elif not uploaded_image:
                 response_msg = "No active documentation found. Please upload a PDF/TXT manual or an image for inspection."
                 st.markdown(response_msg)
@@ -374,6 +368,7 @@ if user_input or uploaded_image:
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": combined_response,
+                "sources": retrieved_docs,
                 "audio": audio_fp
             })
             st.rerun()
