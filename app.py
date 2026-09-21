@@ -93,6 +93,11 @@ if vectorstore:
     You are a technical maintenance assistant. Answer the user's question based strictly on the provided context.
     If you do not know the answer based on the context, state that the information is not available in the manual.
 
+    Format your response using:
+    - Markdown headers (###) for main sections or symptoms
+    - Bullet points (-) for action steps, causes, or requirements
+    - Bold text (**text**) for part numbers, warnings, or key terms
+
     Context:
     {context}
 
@@ -101,7 +106,7 @@ if vectorstore:
 
     Answer:
     """
-    
+
     prompt = ChatPromptTemplate.from_template(prompt_template)
 
     def format_docs(docs):
