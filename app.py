@@ -134,8 +134,7 @@ def generate_pdf_report(messages, active_tag=None):
 # 4. Helper Function: QR/Barcode Detection using OpenCV
 def scan_qr_code(image_bytes):
     try:
-        # Convert image bytes to OpenCV format
-        file_bytes = np.asarray(bytearray(image_bytes), dtype=uint8)
+        file_bytes = np.asarray(bytearray(image_bytes), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         
         detector = cv2.QRCodeDetector()
@@ -161,12 +160,17 @@ selected_lang_code = LANGUAGE_MAP[selected_lang_label]["code"]
 selected_lang_name = LANGUAGE_MAP[selected_lang_label]["name"]
 
 st.sidebar.divider()
-st.sidebar.header("🏷️ Equipment QR/Barcode Scanner")
+st.sidebar.header("🏷️ Equipment QR Scanner")
 
 if "active_qr_tag" not in st.session_state:
     st.session_state.active_qr_tag = None
 
-camera_photo = st.sidebar.camera_input("Scan Equipment Tag QR")
+# Toggle switch to keep the camera completely off unless needed
+enable_camera = st.sidebar.checkbox("📷 Enable QR Camera Scanner", value=False)
+
+camera_photo = None
+if enable_camera:
+    camera_photo = st.sidebar.camera_input("Scan Equipment Tag QR")
 
 if camera_photo is not None:
     detected_qr = scan_qr_code(camera_photo.getvalue())
