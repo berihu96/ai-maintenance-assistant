@@ -58,12 +58,28 @@ st.set_page_config(
 st.title("🔧 AI Maintenance Assistant")
 st.caption("Multimodal Field Tool: QR Equipment Lock, Hybrid RAG, Citation Tracking, Maintenance Scheduler, Multi-Language Voice, Speed Control, IoT Telemetry, Vision Analysis, and PDF Work Logs.")
 
-# 2. Secure API Key Access
-api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+# 2. Safe API Key Access & Loader Pattern
+def get_llm():
+    api_key = None
+    try:
+        if "GROQ_API_KEY" in st.secrets:
+            api_key = st.secrets["GROQ_API_KEY"]
+    except Exception:
+        pass
 
-if not api_key:
-    st.error("`GROQ_API_KEY` not found! Please configure it in Streamlit Cloud Secrets or set it as an environment variable.")
-    st.stop()
+    if not api_key:
+        api_key = os.getenv("GROQ_API_KEY")
+
+    if not api_key:
+        st.sidebar.warning("⚠️ GROQ_API_KEY not detected in Cloud Secrets or env.")
+        api_key = st.sidebar.text_input("Enter Groq API Key (Session Fallback):", type="password")
+
+    if not api_key:
+        st.error("🛑 LLM initialization failed: GROQ_API_KEY is required. Add it to Streamlit Cloud Secrets.")
+        st.stop()
+
+    os.environ["GROQ_API_KEY"] = api_key
+    return ChatGroq(groq_api_key=api_key, model_name="llama-3.3-70b-versatile", temperature=0.1)
 
 
 # 3. Helper Function: CSV Feedback Logger
@@ -232,7 +248,7 @@ st.sidebar.header("📸 Visual Defect Inspection")
 uploaded_image = st.sidebar.file_uploader("Upload component photo", type=["png", "jpg", "jpeg"])
 
 if uploaded_image:
-    st.sidebar.image(uploaded_image, caption="Component Preview", use_container_width=True)
+    st.sidebar.image(uploaded_image, caption="Component Preview", width='stretch')
 
 st.sidebar.divider()
 st.sidebar.header("🎙️ Hands-Free Voice Control")
@@ -378,21 +394,15 @@ retriever_result = (
     if uploaded_file is not None
     else setup_hybrid_retriever()
 )
-ensemble_retriever = retriever_result[0] if retriever_result else None
-search_mode = retriever_result if retriever_result else None
+ensemble_retriever = retriever_result[0] if isinstance(retriever_result, tuple) else retriever_result
+search_mode = retriever_result if isinstance(retriever_result, tuple) and len(retriever_result) > 1 else None
 
 if ensemble_retriever:
     st.sidebar.info("⚡ Persistent Hybrid Search ready.")
 else:
     st.sidebar.warning("Upload a manual or rely on visual analysis.")
 
-# 12. RAG Model Setup
-llm = ChatGroq(
-    groq_api_key=api_key,
-    model_name="llama-3.3-70b-versatile",
-    temperature=0.1
-) if ensemble_retriever else None
-
+# 12. RAG Prompt Template Setup
 prompt = ChatPromptTemplate.from_messages([
     ("system", f"""You are a technical maintenance assistant. Answer the user's question based strictly on the provided context and conversation history.
 If you do not know the answer based on the context, state that the information is not available in the manual.
@@ -408,7 +418,7 @@ Context:
 {{context}}"""),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{question}")
-]) if ensemble_retriever else None
+])
 
 # 13. Top Maintenance Scheduler Status Header
 st.subheader("⏱️ Preventive Maintenance Status")
@@ -461,7 +471,6 @@ tab1, tab2, tab3 = st.tabs(["💬 Field Assistant", "📈 Telemetry & Anomalies"
 
 # ================= TAB 1: FIELD ASSISTANT =================
 with tab1:
-    # Render previous chat history with Feedback Loop controls
     for msg_idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -513,13 +522,14 @@ with tab1:
                 elif st.session_state[rating_key] == "thumbs_down":
                     st.caption("👎 *Feedback recorded: Needs improvement.*")
 
-    # Input Processing for Tab 1
     user_input = st.chat_input(f"Ask a question ({selected_lang_name}) or upload a photo to analyze...")
 
+    current_api_key = None
     if audio_record and "bytes" in audio_record:
+        current_api_key = get_llm().groq_api_key
         with st.spinner(f"Transcribing audio in {selected_lang_name} via Groq Whisper..."):
             try:
-                transcribed_text = transcribe_audio(audio_record["bytes"], selected_lang_code, api_key)
+                transcribed_text = transcribe_audio(audio_record["bytes"], selected_lang_code, current_api_key)
                 if transcribed_text.strip():
                     user_input = transcribed_text.strip()
                     st.sidebar.info(f"🎙️ **Transcribed ({selected_lang_name}):** \"{user_input}\"")
@@ -537,6 +547,7 @@ with tab1:
 
         with st.chat_message("assistant"):
             with st.spinner(f"Analyzing request in {selected_lang_name} via Hybrid RAG..."):
+                active_llm = get_llm()
                 combined_response = ""
                 retrieved_docs = []
                 rag_query = f"[{st.session_state.active_qr_tag}] {current_prompt}" if st.session_state.active_qr_tag else current_prompt
@@ -547,13 +558,13 @@ with tab1:
                         uploaded_image.getvalue(), 
                         current_prompt, 
                         selected_lang_name, 
-                        api_key, 
+                        active_llm.groq_api_key, 
                         st.session_state.active_qr_tag
                     )
                     st.markdown(vision_analysis)
                     combined_response += f"### Visual Inspection Findings\n{vision_analysis}\n\n"
 
-                if ensemble_retriever and llm and prompt:
+                if ensemble_retriever and active_llm and prompt:
                     retrieved_docs = ensemble_retriever.invoke(rag_query)
                     context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
 
@@ -564,7 +575,7 @@ with tab1:
                         elif msg["role"] == "assistant":
                             chat_history.append(AIMessage(content=msg["content"]))
 
-                    chain = prompt | llm | StrOutputParser()
+                    chain = prompt | active_llm | StrOutputParser()
                     rag_response = chain.invoke({
                         "context": context_text,
                         "chat_history": chat_history,
@@ -608,7 +619,7 @@ with tab2:
     with col_plot:
         st.markdown("#### Anomaly Visualization")
         if os.path.exists("anomaly_plot.png"):
-            st.image("anomaly_plot.png", caption="Sensor Anomaly Detection Model Output", use_container_width=True)
+            st.image("anomaly_plot.png", caption="Sensor Anomaly Detection Model Output", width='stretch')
         else:
             st.info("No `anomaly_plot.png` found in workspace.")
 
@@ -616,7 +627,7 @@ with tab2:
         st.markdown("#### Flagged Telemetry Log")
         if os.path.exists("flagged_telemetry.csv"):
             df_flagged = pd.read_csv("flagged_telemetry.csv")
-            st.dataframe(df_flagged, use_container_width=True)
+            st.dataframe(df_flagged, width='stretch')
             
             selected_anomaly_row = st.selectbox("Select flagged event to diagnose:", df_flagged.index, format_func=lambda i: f"Row {i}: {df_flagged.iloc[i].to_dict()}")
             
@@ -660,6 +671,6 @@ with tab3:
             )
             df_feedback = pd.read_csv(FEEDBACK_FILE)
             st.markdown("**Recent Feedback Records:**")
-            st.dataframe(df_feedback.tail(5), use_container_width=True)
+            st.dataframe(df_feedback.tail(5), width='stretch')
         else:
             st.caption("No technician feedback recorded yet.")
