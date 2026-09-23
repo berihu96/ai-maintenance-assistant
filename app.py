@@ -373,11 +373,13 @@ def setup_hybrid_retriever(file_bytes=None, file_name=None):
 
 
 # 11. Hybrid Retriever Setup Initialization
-ensemble_retriever, search_mode = (
+retriever_result = (
     setup_hybrid_retriever(uploaded_file.getvalue(), uploaded_file.name)
     if uploaded_file is not None
     else setup_hybrid_retriever()
 )
+ensemble_retriever = retriever_result[0] if retriever_result else None
+search_mode = retriever_result if retriever_result else None
 
 if ensemble_retriever:
     st.sidebar.info("⚡ Persistent Hybrid Search ready.")
@@ -387,7 +389,7 @@ else:
 # 12. RAG Model Setup
 llm = ChatGroq(
     groq_api_key=api_key,
-    model_name="openai/gpt-oss-120b",
+    model_name="llama-3.3-70b-versatile",
     temperature=0.1
 ) if ensemble_retriever else None
 
@@ -482,7 +484,7 @@ with tab1:
                 if rating_key not in st.session_state:
                     st.session_state[rating_key] = None
 
-                f_col1, f_col2, f_col3 = st.columns()
+                f_col1, f_col2, f_col3 = st.columns(3)
                 with f_col1:
                     if st.button("👍", key=f"up_{msg_idx}"):
                         st.session_state[rating_key] = "thumbs_up"
@@ -601,7 +603,7 @@ with tab1:
 with tab2:
     st.subheader("📈 Real-Time IoT Telemetry & Anomaly Analysis")
     
-    col_plot, col_table = st.columns()
+    col_plot, col_table = st.columns(2)
     
     with col_plot:
         st.markdown("#### Anomaly Visualization")
